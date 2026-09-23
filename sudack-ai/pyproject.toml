@@ -1,7 +1,7 @@
 [project]
 name = "sudack-ai"
 version = "0.1.0"
-description = "FastAPI service for AI generation"
+description = "Stateless FastAPI service for explainable employee development recommendations"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,3 +14,7 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

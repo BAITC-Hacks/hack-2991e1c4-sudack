@@ -1,6 +1,6 @@
 # Sudack AI
 
-Stateless FastAPI service for employee development recommendations. It scores activities deterministically, asks an LLM to select and explain up to three, and returns a template explanation when no LLM is available. The original generic text generation endpoint remains available.
+Stateless FastAPI service for employee development recommendations (Career Quest, HackAlem AI). It scores activities deterministically, asks an LLM to select and explain up to three, and returns a template explanation when no LLM is available.
 
 ## Setup
 
@@ -11,7 +11,7 @@ uv sync
 Copy-Item .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in `.env`. Recommendation uses OpenAI first, then NVIDIA if configured, then a deterministic template. `LLM_MODEL` overrides the OpenAI model for recommendations; `LLM_TIMEOUT` defaults to eight seconds for the complete LLM attempt. No key is needed for scoring, tests, or health checks. `DEFAULT_PROVIDER` applies to the separate `/v1/generate` endpoint.
+Set `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in `.env`. Recommendation uses OpenAI first, then NVIDIA if configured, then a deterministic template. `LLM_MODEL` selects the OpenAI model for recommendations; the example sets `gpt-4o`, which in live audits produced grounded reasons in all three languages, while `gpt-4o-mini` frequently dropped the required level and fell back to the template. `LLM_TIMEOUT` defaults to eight seconds for the complete LLM attempt, shared equally between configured providers. No key is needed for scoring, tests, or health checks.
 
 ```powershell
 uv run uvicorn main:app --reload --port 8001
@@ -24,33 +24,29 @@ The full request and response contract, examples, and error codes are in [docs/a
 
 `POST /recommend` accepts one employee, next-grade requirements, history, and an activity catalog. It returns up to three recommendations with scores, factual factors, a calculation, readiness, and `source` (`llm` or `fallback`). `POST /score/batch` scores many employees without any LLM call. Go supplies all context; this service has no database or authorization rules. See [docs/data-integration.md](docs/data-integration.md) for the supplied Career Quest dataset.
 
-`GET /health` returns `{"status":"ok"}`. `POST /v1/generate` accepts:
-
-```json
-{"prompt":"Write a short greeting", "provider":"nvidia"}
-```
-
-The `provider` field is optional and uses `DEFAULT_PROVIDER` when omitted. A successful response contains `provider` and `text`. The API also exposes generated OpenAPI documentation at `/docs`.
+`GET /health` returns `{"status":"ok"}`. The API also exposes generated OpenAPI documentation at `/docs`.
 
 ## Structure
 
 - `app/api.py`: HTTP contract and application assembly
 - `app/config.py`: environment configuration
-- `app/generation.py`: generation interface, strategy, and selection service
 - `app/models.py`: request and response models, including starter-kit event adaptation
 - `app/scoring.py`: pure scoring and eligibility logic
-- `app/explain.py`: OpenAI SDK provider strategies and multilingual fallback
-- `app/recommendation.py`: recommendation orchestration and LLM validation
-- `app/cache.py`: bounded, process-local response cache
-- `tests/`: unit and HTTP tests using fakes and an in-memory HTTP transport
+- `app/explain.py`: OpenAI SDK provider strategies with failover, and the multilingual template fallback
+- `app/recommendation.py`: recommendation orchestration and LLM output validation
+- `app/cache.py`: bounded, process-local response cache for validated LLM answers
+- `scripts/audit_verdict.py`: one-call live audit of a starter-kit employee
+- `tests/`: unit, trap-profile, and HTTP tests using fakes; the dataset test runs all 200 kit employees
 
-Add a new provider by implementing `GenerationStrategy` and registering it in application assembly. Tests use injected strategies and never call a live provider.
+Add a new provider by implementing `ExplanationStrategy` and registering it in `create_app`. Tests use injected strategies and never call a live provider.
 
 ## Scoring example
 
-If an employee has System Design level 2 and the next grade requires level 4, a workshop that raises it to 3 closes one level of the gap. Its weighted gain is `1.5 × 1 = 1.5`. With no similar history, engagement is `(0 + 1) / (0 + 2) = 0.5`, so its raw score is `1.5 × 0.5^0.7 ≈ 0.9234`. Readiness measures how much of the next-grade skill requirements is met; `after_top` applies only the first recommendation's gains.
+If an employee has System Design level 2 and the next grade requires level 4, a workshop that raises it to 3 closes one level of the gap. Its weighted gain is `1.5 × 1 = 1.5`; if System Design is in the target profile's `critical_skills` the weight is 2.5 instead, and growth outside the requirements weighs 0.3. With no history on these skills, engagement is `(0 + 1) / (0 + 2) = 0.5`, so its raw score is `1.5 × 0.5^0.7 ≈ 0.9234`.
 
-The score is a ranking value, not a probability. Results with repeated primary skills receive a 0.8 ordering penalty, while the reported score and calculation remain the raw values.
+Engagement is a Laplace-smoothed completion rate. Past activities that develop any of the same skills count fully; activities of the same type but on unrelated skills count at 0.3; entries dated more than a year before the employee's latest history entry count at 0.6. So three missed public-speaking sessions strongly lower the public-speaking club's engagement, only slightly lower another workshop's, and leave a course untouched. Events with `in_progress` or `overdue` history are not recommended again; completed events are excluded unless recurring.
+
+Skill levels in the profile reflect the last assessment, so completions dated after `last_review_date` are applied on top before scoring and reported as `applied_progress`. This is also how marking an activity as done moves progress: Go appends a completed history row and the next call reflects the new level. Readiness measures how much of the weighted next-grade skill requirements is met; `after_top` applies only the first recommendation's gains. The score is a ranking value, not a probability. Results with repeated primary skills receive a 0.8 ordering penalty, while the reported score and calculation remain the raw values.
 
 To audit one starter-kit employee with a single paid OpenAI call, run `uv run python scripts/audit_verdict.py --live E0002`. The script disables SDK retries and NVIDIA failover. Its output shows the top scored candidates and the accepted verdict; run it only when an API call is intended.
 
