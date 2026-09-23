@@ -24,3 +24,11 @@ Round 1 on `gpt-4o-mini` with the previous prompt: every call returned `source: 
 Fixes: the LLM now receives a sanitized fact view (skill names, current/required/after, `critical`, `closes_gap`, event description, history counts, and a ready-made `fact` sentence per skill) and never sees weights; candidates are gap-closing first; the prompt defines required vs critical and forbids duplicate reasons; an ungrounded or duplicate reason is replaced by the template for that event instead of dropping the event; each recommendation reports `reason_source`.
 
 Round 2 on `gpt-4o-mini`: E0004 and E0008 selections correct, one reason each templated (missing history mention or a false "not required" claim caught by the level check). E0005 initially fell back because both Kazakh reasons omitted the required level; with the `fact` sentences it passed with two `llm` reasons. Round 2 on `gpt-4o`: E0005 and E0008 returned all reasons as `llm`, mentioning the event title, all three levels, and history. `LLM_MODEL=gpt-4o` is now the documented default.
+
+## Provider switching check, 2026-09-23
+
+The chain is configurable (`LLM_PROVIDERS`), visible (`GET /providers`) and every `llm` response names its provider. Live results with the hackathon keys:
+
+- `openai` / `gpt-4o`: E0028 answered in one call, `source: llm`, `llm_provider: openai`.
+- `nvidia`: the key is accepted by `GET /v1/models` (82 models listed) but every chat completion returns `401 Authentication failed`, and the previous default `meta/llama-3.1-8b-instruct` is retired (`410 Gone`). The default is now `nvidia/llama-3.1-nemotron-70b-instruct`; the key itself needs to be checked in the NVIDIA build portal before NVIDIA can serve live explanations.
+- `LLM_PROVIDERS=nvidia,openai` with both keys: NVIDIA fails within its time slice, OpenAI answers, the response reports `llm_provider: openai`. This is the failover path working end to end.

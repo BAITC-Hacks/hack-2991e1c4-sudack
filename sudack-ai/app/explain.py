@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from typing import Any, Protocol
 
 from app.models import RecommendRequest
@@ -12,13 +13,23 @@ class ExplanationStrategy(Protocol):
     async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> list[dict[str, str]]: ...
 
 
-class SDKExplanationStrategy:
-    """OpenAI SDK client; compatible providers can use a different base_url."""
+class Proposal(list):
+    """LLM items plus the name of the provider that produced them."""
 
-    def __init__(self, client: Any, model: str, structured: bool = True) -> None:
+    provider: str | None = None
+    model: str | None = None
+
+
+class SDKExplanationStrategy:
+    """OpenAI SDK client; any OpenAI-compatible provider works through base_url
+    (OpenAI, NVIDIA NIM, a local vLLM or Ollama endpoint)."""
+
+    def __init__(self, client: Any, model: str, structured: bool = True, name: str = "openai") -> None:
         self._client = client
         self._model = model
         self._structured = structured
+        self.name = name
+        self.model = model
 
     async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> list[dict[str, str]]:
         language_instruction = {
@@ -77,25 +88,51 @@ class SDKExplanationStrategy:
         result = json.loads(content)
         if not isinstance(result, dict) or not isinstance(result.get("recommendations"), list):
             raise ValueError("Invalid recommendation response")
-        return result["recommendations"]
+        proposal = Proposal(result["recommendations"])
+        proposal.provider, proposal.model = self.name, self._model
+        return proposal
 
 
 class FailoverExplanationStrategy:
-    """Try providers in order; each attempt gets its own slice of the time budget
-    so a hanging first provider cannot starve the second one."""
+    """Try providers in order against one deadline. A provider that fails fast hands all of the
+    remaining time to the next one; a provider that is not last is capped at `primary_share`
+    of what is left, so a hanging primary cannot starve the secondary."""
 
-    def __init__(self, strategies: list[ExplanationStrategy], attempt_timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        strategies: list[ExplanationStrategy],
+        attempt_timeout: float | None = None,
+        budget: float | None = None,
+        primary_share: float = 0.75,
+    ) -> None:
         self._strategies = strategies
         self._attempt_timeout = attempt_timeout
+        self._budget = budget
+        self._primary_share = primary_share
 
-    async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> list[dict[str, str]]:
-        for strategy in self._strategies:
+    def _timeout_for(self, index: int, deadline: float | None) -> float | None:
+        timeout = self._attempt_timeout
+        if deadline is not None:
+            remaining = max(0.0, deadline - time.monotonic())
+            is_last = index == len(self._strategies) - 1
+            slice_ = remaining if is_last else remaining * self._primary_share
+            timeout = slice_ if timeout is None else min(timeout, slice_)
+        return timeout
+
+    async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> Proposal:
+        deadline = time.monotonic() + self._budget if self._budget is not None else None
+        for index, strategy in enumerate(self._strategies):
+            timeout = self._timeout_for(index, deadline)
+            if timeout is not None and timeout <= 0:
+                break
             try:
-                return await asyncio.wait_for(
-                    strategy.select(request, candidates), timeout=self._attempt_timeout
-                )
+                items = await asyncio.wait_for(strategy.select(request, candidates), timeout=timeout)
             except Exception:
                 continue
+            proposal = items if isinstance(items, Proposal) else Proposal(items)
+            proposal.provider = proposal.provider or getattr(strategy, "name", None)
+            proposal.model = proposal.model or getattr(strategy, "model", None)
+            return proposal
         raise RuntimeError("No LLM provider returned a usable response")
 
 

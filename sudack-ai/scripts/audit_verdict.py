@@ -1,7 +1,7 @@
 """Inspect one starter-kit employee with at most one OpenAI request.
 
-Usage: python scripts/audit_verdict.py --live E0002
-This script deliberately disables SDK retries and NVIDIA failover.
+Usage: python scripts/audit_verdict.py --live E0002 [--provider openai|nvidia]
+This script deliberately disables SDK retries and failover: exactly one provider, one request.
 """
 
 import asyncio
@@ -53,10 +53,20 @@ def load_payload(employee_id: str) -> dict:
     }
 
 
-async def audit(employee_id: str) -> None:
+async def audit(employee_id: str, provider: str = "openai") -> None:
     settings = Settings()
-    if not settings.openai_api_key.strip():
-        raise SystemExit("OPENAI_API_KEY is not configured")
+    if provider == "openai":
+        api_key, base_url, model, structured = (
+            settings.openai_api_key, settings.openai_base_url, settings.llm_model or settings.openai_model, True,
+        )
+    elif provider == "nvidia":
+        api_key, base_url, model, structured = (
+            settings.nvidia_api_key, settings.nvidia_base_url, settings.nvidia_model, False,
+        )
+    else:
+        raise SystemExit(f"Unknown provider {provider!r}")
+    if not api_key.strip():
+        raise SystemExit(f"{provider.upper()}_API_KEY is not configured")
     request = RecommendRequest.model_validate(load_payload(employee_id))
     candidates = ScoringService().rank(request)[:5]
     # NOTE: the service itself prefers gap-closing candidates; this list is the raw top five.
@@ -76,17 +86,14 @@ async def audit(employee_id: str) -> None:
                 self.error = type(exc).__name__
                 raise
 
-    async with AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-        timeout=settings.llm_timeout,
-        max_retries=0,
-    ) as client:
-        strategy = RecordingStrategy(SDKExplanationStrategy(client, settings.llm_model or settings.openai_model))
+    async with AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=settings.llm_timeout, max_retries=0) as client:
+        strategy = RecordingStrategy(SDKExplanationStrategy(client, model, structured=structured, name=provider))
         service = RecommendationService(explainer=strategy, timeout=settings.llm_timeout)
         verdict = await service.recommend(request)
 
     print(json.dumps({
+        "provider": provider,
+        "model": model,
         "employee_id": employee_id,
         "language": request.lang,
         "grade": request.employee.grade,
@@ -115,6 +122,8 @@ async def audit(employee_id: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "--live":
-        raise SystemExit("Usage: python scripts/audit_verdict.py --live EMPLOYEE_ID (one paid request)")
-    asyncio.run(audit(sys.argv[2]))
+    args = sys.argv[1:]
+    if len(args) < 2 or args[0] != "--live":
+        raise SystemExit("Usage: python scripts/audit_verdict.py --live EMPLOYEE_ID [--provider openai|nvidia]")
+    chosen = args[args.index("--provider") + 1] if "--provider" in args else "openai"
+    asyncio.run(audit(args[1], chosen))
