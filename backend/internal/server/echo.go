@@ -14,6 +14,7 @@ type Server struct {
 
 func NewServer(h *handler.Handler) (*Server, error) {
 	e := echo.New()
+	e.HTTPErrorHandler = newEchoErrorHandler()
 
 	return &Server{
 		echo: e,
