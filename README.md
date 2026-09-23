@@ -1,4 +1,4 @@
-# Career Quest
+# Career Quest by Sudack
 
 An AI career navigator for employees and HR, built by team Sudack for the HackAlem AI hackathon (Halyk Bank track, case "Career Quest"). An employee opens their profile and sees where they stand against the next grade, gets one to three recommended development activities with an explanation grounded in several factors, marks an activity as done and sees progress move. HR sees which skills sag across the company, who has no useful next step, who is dropping out of development, and what a new event would change before it is created.
 
