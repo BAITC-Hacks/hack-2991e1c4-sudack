@@ -1,6 +1,10 @@
-# Career Quest
+# hack-2991e1c4-sudack
 
-An AI career navigator for employees and HR, built for the HackAlem AI hackathon (Halyk Bank track, case "Career Quest"). An employee opens their profile and sees where they stand against the next grade, gets one to three recommended development activities with an explanation grounded in several factors, marks an activity as done and sees progress move. HR sees which skills sag across the company, who has no useful next step, who is dropping out of development, and what a new event would change before it is created.
+Hackathon team repository for **Sudack**.
+
+# Career Quest by Sudack
+
+An AI career navigator for employees and HR, built by team Sudack for the HackAlem AI hackathon (Halyk Bank track, case "Career Quest"). An employee opens their profile and sees where they stand against the next grade, gets one to three recommended development activities with an explanation grounded in several factors, marks an activity as done and sees progress move. HR sees which skills sag across the company, who has no useful next step, who is dropping out of development, and what a new event would change before it is created.
 
 The core of the solution is the quality and explainability of the recommendation, not the interface. Every recommendation is produced by a deterministic, inspectable scorer; an LLM only selects among the top candidates and writes the explanation, and everything it writes is validated against the facts before it is shown. When no LLM is available or its text is not grounded, the same facts are rendered by a template and labeled as such.
 
