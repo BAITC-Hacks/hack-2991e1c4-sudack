@@ -46,6 +46,7 @@ class Event(BaseModel):
     type: str
     description: str | None = None
     format: str | None = None
+    duration_hours: float | None = Field(default=None, ge=0)
     upcoming_sessions: list[str] | None = None
     audience: Audience = Field(default_factory=Audience)
     skills: dict[str, SkillGain] = Field(default_factory=dict)
@@ -88,6 +89,7 @@ class RecommendRequest(BaseModel):
     history: list[HistoryEntry] = Field(default_factory=list)
     events: list[Event]
     lang: Language = "ru"
+    as_of: str | None = None  # "today" for scheduling and recency; defaults to the latest history date
 
     @model_validator(mode="before")
     @classmethod
@@ -126,6 +128,7 @@ class RecommendResponse(BaseModel):
     readiness: Readiness
     gaps: dict[str, int] = Field(default_factory=dict)
     applied_progress: list[dict[str, Any]] = Field(default_factory=list)
+    rejected: list[dict[str, Any]] = Field(default_factory=list)
     source: Literal["llm", "fallback"]
 
 
@@ -145,7 +148,41 @@ class BatchResult(BaseModel):
     readiness: float
     gaps: dict[str, int] = Field(default_factory=dict)
     participation: dict[str, Any] = Field(default_factory=dict)
+    risk: dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchResponse(BaseModel):
     results: list[BatchResult]
+
+
+class SimulateResponse(BaseModel):
+    as_of: str | None
+    next_grade: str
+    reachable: bool
+    steps: list[dict[str, Any]]
+    total_hours: float
+    estimated_completion: str | None
+    readiness_path: list[float]
+    coverage: dict[str, float]
+    remaining_gaps: dict[str, int]
+    blocked: list[dict[str, Any]]
+
+
+class ImpactRequest(BaseModel):
+    event: Event
+    items: list[RecommendRequest]
+
+
+class ImpactResponse(BaseModel):
+    event_id: str
+    title: str
+    employees: int
+    audience_count: int
+    gap_closing_count: int
+    gap_closing_employees: list[str]
+    expected_completions: float
+    gap_levels_closed: int
+    hours_per_gap_level: float | None
+    by_skill: dict[str, int]
+    catalog_rank: int
+    catalog_top: list[dict[str, Any]]

@@ -1,0 +1,15 @@
+export type Employee = { employee_id:string; full_name?:string; department?:string; role:string; grade:string; tenure_months:number; skills:Record<string,number>; preferred_language?:string; last_review_date?:string };
+export type Skill = { skill_id:string; name:string; type:string; category:string };
+export type RoleProfile = { role:string; grade:string; required_skills:Record<string,number>; critical_skills:string[] };
+export type Event = { event_id:string; title:string; description:string; type:string; format:string; duration_hours:number; mandatory:boolean; target_roles:string[]; target_grades:string[]; develops_skills:{skill_id:string;gain:number;max_level:number}[]; prerequisites:Record<string,number>; upcoming_sessions:string[] };
+export type History = { record_id?:string; employee_id:string; event_id:string; date:string; status:string };
+export type Gap = { skill_id:string; name:string; current:number; required:number; gap:number; critical:boolean };
+export type Factor = { type:"grade_requirement"|"skill_gap"|"history"|"effective_gain"; text?:string; skill?:string; name?:string; current?:number; required?:number; from?:number; to?:number; completed?:number; total?:number; missed?:number; critical?:boolean };
+export type Recommendation = { event_id:string; title:string; type?:string; duration_hours?:number; score:number; reason:string; reason_source?:"llm"|"template"; factors:Factor[]; calculation:{gap_closed:number;engagement:number;formula:string} };
+export type RecResponse = { recommendations:Recommendation[]; readiness:{current:number;after_top:number}; source:"llm"|"fallback" };
+export type Profile = { employee:Employee; next_grade:string|null; readiness_percent:number|null; gaps:Gap[]; history:History[] };
+export type WeakSkill = { skill_id:string; name:string; employee_count:number; missing_levels:number };
+export type NoStep = { employee_id:string; full_name?:string; role:string; grade:string; reason:string };
+export type Participation = { event_id:string; title:string; completed:number; skipped:number; declined:number; completion_rate:number };
+export type Overview = { weak_skills:WeakSkill[]; no_recommendation:NoStep[]; participation:Participation[]; employee_count:number; event_count:number };
+export type ImportReport = { imported:Record<string,number>; unchanged?:Record<string,number>; errors?:string[] };

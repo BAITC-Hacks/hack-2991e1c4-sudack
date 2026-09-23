@@ -5,6 +5,7 @@ import re
 
 from app.cache import ResponseCache
 from app.explain import ExplanationStrategy, template_explain
+from app.insights import dropout_risk, why_not
 from app.models import (
     BatchRequest, BatchResponse, BatchResult, BatchTopItem, Calculation,
     Readiness, RecommendRequest, RecommendResponse, Recommendation,
@@ -88,6 +89,7 @@ class RecommendationService:
             ),
             gaps={skill: gap for skill, gap in skill_gaps(skills, requirements).items() if gap > 0},
             applied_progress=applied,
+            rejected=why_not(request, ranked, [candidate for candidate, _, _ in selected], skills),
             source=source,
         )
         # A template answer produced because the LLM was unavailable must not be
@@ -115,6 +117,7 @@ class RecommendationService:
                 readiness=readiness(skills, item.next_grade_requirements, item.critical_skills),
                 gaps={skill: gap for skill, gap in gaps.items() if gap > 0},
                 participation=participation(item.history),
+                risk=dropout_risk(item),
             ))
         return BatchResponse(results=results)
 
