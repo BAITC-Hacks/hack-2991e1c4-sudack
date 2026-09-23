@@ -19,7 +19,7 @@ func main() {
 		log.Fatalf("config.NewConfig: %v", err)
 	}
 
-	db, err := sql.Open("sqlite3", "../.local/db/test.db")
+	db, err := sql.Open("sqlite3", cfg.DBPath)
 	if err != nil {
 		log.Fatalf("sql.Open: %v", err)
 	}

@@ -7,7 +7,8 @@ import (
 )
 
 type Config struct {
-	Port int `envconfig:"PORT" default:"8080"`
+	Port   int    `envconfig:"PORT" default:"8080"`
+	DBPath string `envconfig:"DB_PATH" default:".local/db/test.db"`
 }
 
 func NewConfig() (*Config, error) {
