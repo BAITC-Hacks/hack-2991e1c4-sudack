@@ -9,7 +9,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o}
-      LLM_TIMEOUT: ${LLM_TIMEOUT:-8}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-9}
+      LLM_PROVIDERS: ${LLM_PROVIDERS:-openai,nvidia}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
       - "8001:8001"
     healthcheck:
@@ -38,6 +40,8 @@ services:
         # Next.js bakes NEXT_PUBLIC_* at build time. Browser calls go to the host-published Go port.
         NEXT_PUBLIC_API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
         NEXT_PUBLIC_USE_MOCKS: ${FRONTEND_USE_MOCKS:-true}
+        # With mocks on, the browser calls the AI service directly for live explanations, roadmap, risk and impact.
+        NEXT_PUBLIC_AI_URL: ${FRONTEND_AI_URL:-http://localhost:8001}
     ports:
       - "3000:3000"
     depends_on:

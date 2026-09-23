@@ -37,6 +37,17 @@ class SDKExplanationStrategy:
             "kk": "Write every reason in Kazakh using Kazakh Cyrillic, not English or Russian.",
             "en": "Write every reason in English.",
         }[request.lang]
+        example = {
+            "ru": "System Design: сейчас 2, требуется 4 для Senior (критичный навык), после активности 3. "
+                  "По этим навыкам вы завершили 1 из 2 активностей и пропустили 1. "
+                  "Это главный разрыв для перехода на Senior.",
+            "kk": "System Design: қазір 2, Senior үшін 4 қажет (шешуші дағды), шарадан кейін 3. "
+                  "Осы дағдылар бойынша 2 шараның 1-ін аяқтадыңыз, 1-ін өткізіп алдыңыз. "
+                  "Бұл Senior-ға өту үшін басты алшақтық.",
+            "en": "System Design: current 2, required 4 for Senior (critical), after this activity 3. "
+                  "You completed 1 of 2 activities on these skills and missed 1. "
+                  "This is the main gap for Senior.",
+        }[request.lang]
         prompt = {
             "employee": {"role": request.employee.role, "grade": request.employee.grade},
             "next_grade": request.next_grade,
@@ -55,6 +66,7 @@ class SDKExplanationStrategy:
         args: dict[str, Any] = {
             "model": self._model,
             "temperature": 0,
+            "max_tokens": 700,  # three short reasons; keeps gpt-4o inside the time budget
             "messages": [
                 {"role": "system", "content": (
                     "You are a career navigator. Return JSON with 1 to 3 recommendations, ordered by usefulness "
@@ -71,8 +83,11 @@ class SDKExplanationStrategy:
                     "names exactly as given. Describe participation history from the history facts: activities on "
                     "the same skills (completed/total/missed) matter most; same-type activities on other skills "
                     "are weaker evidence; mention missed activities tactfully and never blame. Each reason must be "
-                    "specific to its event and different from the other reasons. Write 2-3 short sentences, "
-                    f"addressing the employee respectfully. {language_instruction} Do not compare employees."
+                    "specific to its event and different from the other reasons. STRUCTURE of every reason, in this "
+                    "order: (1) the `fact` line of each skill translated with all three numbers kept; (2) one sentence "
+                    "on participation history from the history counts; (3) one sentence on why it matters for the next "
+                    f"grade. Example of the expected shape: \"{example}\" Address the employee respectfully. "
+                    f"{language_instruction} Do not compare employees."
                 )},
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],

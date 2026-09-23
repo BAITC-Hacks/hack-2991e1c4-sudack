@@ -729,3 +729,12 @@ def test_failover_caps_a_hanging_primary_so_the_secondary_still_runs() -> None:
     candidates = ScoringService().rank(request)[:5]
     proposal = asyncio.run(strategy.select(request, candidates))
     assert proposal.provider == "nvidia"
+
+
+def test_prompt_demands_the_fact_structure_with_a_localized_example() -> None:
+    data = payload()
+    data["lang"] = "kk"
+    captured = _capture_prompt(data)
+    system = captured["messages"][0]["content"]
+    assert "STRUCTURE of every reason" in system
+    assert "қазір 2, Senior үшін 4 қажет" in system
