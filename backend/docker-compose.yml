@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - career_quest_db:/app/.local/db
+      - ../sudack-ai/docs/data:/app/data:ro
+
+volumes:
+  career_quest_db:

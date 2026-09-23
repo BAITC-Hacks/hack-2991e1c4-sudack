@@ -121,8 +121,9 @@ HTTP-статус берётся из Error.HTTPCode и не включаетс�
 
 SQLite работает как файл, отдельный сервер БД не нужен. Образ содержит два Go-бинарника: сервер и cmd/migrate. При старте entrypoint вызывает мигратор, затем сервер. Каталог данных монтируется только для чтения; SQLite хранится в именованном томе.
 
-    docker build -t career-quest-backend .
-    docker run --rm -p 8080:8080 -v career-quest-db:/app/.local/db -v "$(realpath ../sudack-ai/docs/data):/app/data:ro" career-quest-backend
+    docker compose up --build
+
+Compose монтирует ../sudack-ai/docs/data в /app/data. При ручном docker run нужно также передать этот каталог через -v, иначе мигратор не найдёт skills.json.
 
 DB_PATH по умолчанию в образе — /app/.local/db/test.db, DATA_DIR — /app/data. Для каталога хоста вместо именованного тома нужны права на запись для UID 10001. Образ собирает go-sqlite3 с CGO.
 
