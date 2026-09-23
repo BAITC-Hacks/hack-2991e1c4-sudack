@@ -134,8 +134,29 @@ class RecommendResponse(BaseModel):
     llm_model: str | None = None
 
 
+def _inject_shared(value: Any) -> Any:
+    """`events` and `skills_meta` may be sent once for the whole batch instead of per item."""
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+        return value
+    shared = {key: value[key] for key in ("events", "skills_meta") if key in value}
+    if not shared:
+        return value
+    items = [
+        {**shared, **item} if isinstance(item, dict) else item
+        for item in value["items"]
+    ]
+    return {**value, "items": items}
+
+
 class BatchRequest(BaseModel):
     items: list[RecommendRequest]
+    events: list[Event] | None = None
+    skills_meta: dict[str, SkillMeta] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def share_catalog(cls, value: Any) -> Any:
+        return _inject_shared(value)
 
 
 class BatchTopItem(BaseModel):
@@ -173,6 +194,13 @@ class SimulateResponse(BaseModel):
 class ImpactRequest(BaseModel):
     event: Event
     items: list[RecommendRequest]
+    events: list[Event] | None = None
+    skills_meta: dict[str, SkillMeta] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def share_catalog(cls, value: Any) -> Any:
+        return _inject_shared(value)
 
 
 class ImpactResponse(BaseModel):

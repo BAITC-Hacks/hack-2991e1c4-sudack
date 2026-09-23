@@ -1,3 +1,5 @@
+🇬🇧 English · 🇷🇺 [Русский](README.ru.md)
+
 # Career Quest by Sudack
 
 An AI career navigator for employees and HR, built by team Sudack for the HackAlem AI hackathon (Halyk Bank track, case "Career Quest"). An employee opens their profile and sees where they stand against the next grade, gets one to three recommended development activities with an explanation grounded in several factors, marks an activity as done and sees progress move. HR sees which skills sag across the company, who has no useful next step, who is dropping out of development, and what a new event would change before it is created.
@@ -41,7 +43,7 @@ Without an API key the system still works end to end: explanations come from the
 
 **Interchangeable LLM providers.** The AI service talks to every provider through the OpenAI chat-completions protocol, so a provider is a base URL, a key and a model name. `LLM_PROVIDERS` (default `openai,nvidia`) sets the failover order; `GET /providers` on the AI service shows the active chain; every recommendation names the engine that answered in `llm_provider` and `llm_model`. The chain runs against one deadline (`LLM_TIMEOUT`): a provider that fails fast hands the remaining time to the next one, and no provider except the last may use more than 75% of what is left. Verified live: with `LLM_PROVIDERS=nvidia,openai` the NVIDIA call fails, OpenAI answers, and the response reports `llm_provider: openai`. The hackathon NVIDIA key currently lists models but returns 401 on inference, so NVIDIA acts as a configured standby until the key is activated; details in `sudack-ai/docs/VERDICT_AUDIT.md`.
 
-`FRONTEND_USE_MOCKS` in `.env` controls whether the frontend talks to the Go API (`false`) or runs on the bundled synthetic dataset (`true`, the default while the Go endpoints are being completed). See "Status" below.
+`FRONTEND_USE_MOCKS` in `.env` controls whether the frontend talks to the Go API (`false`) or runs on the bundled synthetic dataset (`true`, the default while the Go endpoints are being completed). In the bundled-data mode the browser calls the AI service directly at `FRONTEND_AI_URL` for live LLM explanations, the "why not X" block, the grade roadmap, dropout risk and the draft-event constructor, so the AI layer is demonstrable without the Go API; if the AI service is down the screens fall back to the local calculation and say so. Employee names never leave the browser in that mode. **This direct browser-to-AI path is a demo stopgap only:** the target architecture is frontend → Go API → AI service, with Go owning data, access control and the AI call. Once the Go endpoints land, the frontend switches to `FRONTEND_USE_MOCKS=false` and `FRONTEND_AI_URL` is dropped. See "Status" below.
 
 ### Running services separately
 
@@ -94,6 +96,7 @@ Full formulas, worked examples and the live audit log are in `sudack-ai/README.m
 
 ```
 README.md                 this file
+README.ru.md              Russian version
 docker-compose.yml        full stack
 .env.example              keys and frontend mode
 docs/jury-profiles/       three trap profiles in kit format with expected answers
@@ -105,7 +108,7 @@ sudack-ai/                FastAPI AI service, tests, dataset copy, API docs
 ## Verifying
 
 ```bash
-cd sudack-ai && uv run pytest         # 59 tests: trap profiles, contract, dataset run over 200 employees, LLM validation
+cd sudack-ai && uv run pytest         # 70 tests: trap profiles, contract, dataset run over 200 employees, LLM validation
 cd frontend && npm run lint && npm run build
 ```
 

@@ -32,3 +32,7 @@ The chain is configurable (`LLM_PROVIDERS`), visible (`GET /providers`) and ever
 - `openai` / `gpt-4o`: E0028 answered in one call, `source: llm`, `llm_provider: openai`.
 - `nvidia`: the key is accepted by `GET /v1/models` (82 models listed) but every chat completion returns `401 Authentication failed`, and the previous default `meta/llama-3.1-8b-instruct` is retired (`410 Gone`). The default is now `nvidia/llama-3.1-nemotron-70b-instruct`; the key itself needs to be checked in the NVIDIA build portal before NVIDIA can serve live explanations.
 - `LLM_PROVIDERS=nvidia,openai` with both keys: NVIDIA fails within its time slice, OpenAI answers, the response reports `llm_provider: openai`. This is the failover path working end to end.
+
+## Structured prompt and 9-second budget, 2026-09-23
+
+Through the frontend's direct path, E0028 fell back after 6.5 s: OpenAI was first in a two-provider chain and capped at 75% of an 8-second budget while `gpt-4o` needed 6–7 s. The default budget is now 9 s (the brief allows 10), `max_tokens` is 700, and the local `.env` runs `LLM_PROVIDERS=openai` until the NVIDIA key is enabled. E0004 (ru) then still fell back because the model wrote three reasons without any level numbers, which the validator rejected correctly. The system prompt now dictates the reason structure (fact line with all three numbers, one history sentence, one why-it-matters sentence) with a localized example; after that E0004 returned three grounded `llm` reasons and E0001 (kk) two.
