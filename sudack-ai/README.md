@@ -51,3 +51,7 @@ Add a new provider by implementing `GenerationStrategy` and registering it in ap
 If an employee has System Design level 2 and the next grade requires level 4, a workshop that raises it to 3 closes one level of the gap. Its weighted gain is `1.5 × 1 = 1.5`. With no similar history, engagement is `(0 + 1) / (0 + 2) = 0.5`, so its raw score is `1.5 × 0.5^0.7 ≈ 0.9234`. Readiness measures how much of the next-grade skill requirements is met; `after_top` applies only the first recommendation's gains.
 
 The score is a ranking value, not a probability. Results with repeated primary skills receive a 0.8 ordering penalty, while the reported score and calculation remain the raw values.
+
+To audit one starter-kit employee with a single paid OpenAI call, run `uv run python scripts/audit_verdict.py --live E0002`. The script disables SDK retries and NVIDIA failover. Its output shows the top scored candidates and the accepted verdict; run it only when an API call is intended.
+
+The [two-case verdict audit](docs/VERDICT_AUDIT.md) records the observed live outputs and the resulting validation and explanation fixes.

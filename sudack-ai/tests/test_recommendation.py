@@ -130,18 +130,52 @@ def test_recommend_uses_valid_llm_selection_and_cache_key_changes_with_history()
 
         async def select(self, *_args, **_kwargs):
             self.calls += 1
-            return [{"event_id": "EV_DESIGN", "reason": "Useful for the next grade."}]
+            return [{"event_id": "EV_DESIGN", "reason": (
+                "For Senior, System Design is 2 against 4 and this raises it to 3. "
+                "You have no similar activity history (0 of 0)."
+            )}]
 
     explainer = GoodExplainer()
     service = RecommendationService(explainer=explainer)
-    first = RecommendRequest.model_validate(payload())
+    data = payload()
+    data["lang"] = "en"
+    first = RecommendRequest.model_validate(data)
     assert asyncio.run(service.recommend(first)).source == "llm"
     assert asyncio.run(service.recommend(first)).source == "llm"
     assert explainer.calls == 1
-    changed = deepcopy(payload())
+    changed = deepcopy(data)
     changed["history"] = [{"event_id": "EV_SPEAK", "status": "skipped"}]
     asyncio.run(service.recommend(RecommendRequest.model_validate(changed)))
     assert explainer.calls == 2
+
+
+def test_kazakh_request_rejects_english_llm_reason() -> None:
+    class EnglishExplainer:
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": (
+                "For Senior, System Design is 2 against 4 and this raises it to 3. "
+                "You have no similar activity history (0 of 0)."
+            )}]
+
+    data = payload()
+    data["lang"] = "kk"
+    result = asyncio.run(RecommendationService(explainer=EnglishExplainer()).recommend(
+        RecommendRequest.model_validate(data)
+    ))
+    assert result.source == "fallback"
+    assert "дағдысы" in result.recommendations[0].reason
+
+
+def test_reason_without_numeric_facts_falls_back() -> None:
+    class VagueExplainer:
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": "Это полезно для Senior."}]
+
+    result = asyncio.run(RecommendationService(explainer=VagueExplainer()).recommend(
+        RecommendRequest.model_validate(payload())
+    ))
+    assert result.source == "fallback"
+    assert "сейчас 2" in result.recommendations[0].reason
 
 
 def test_llm_strategy_requests_structured_output() -> None:
@@ -193,6 +227,44 @@ def test_multi_skill_event_explains_the_highest_value_skill() -> None:
     result = recommend(data)
     factors = result["recommendations"][0]["factors"]
     assert next(factor for factor in factors if factor["type"] == "skill_gap")["skill"] == "SK_SYSTEM_DESIGN"
+
+
+def test_multi_skill_score_is_fully_explained_by_factors() -> None:
+    data = payload()
+    data["employee"]["skills"]["SK_PYTHON"] = 3
+    data["next_grade_requirements"]["SK_PYTHON"] = 4
+    data["events"] = [{
+        "event_id": "EV_MULTI", "title": "Mixed workshop", "type": "workshop",
+        "skills": {
+            "SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4},
+            "SK_PYTHON": {"gain": 1, "max_level": 5},
+        },
+    }]
+    item = recommend(data)["recommendations"][0]
+    gains = [factor for factor in item["factors"] if factor["type"] == "effective_gain"]
+    assert {factor["skill"] for factor in gains} == {"SK_SYSTEM_DESIGN", "SK_PYTHON"}
+    assert sum(factor["weighted_gap_closed"] for factor in gains) == item["calculation"]["gap_closed"]
+    assert "SK_PYTHON" in item["reason"]
+
+
+def test_fallback_prefers_only_grade_gap_closing_events_when_available() -> None:
+    data = payload()
+    data["employee"]["skills"]["SK_PYTHON"] = 3
+    data["next_grade_requirements"]["SK_PYTHON"] = 3
+    data["events"] = [data["events"][0], {
+        "event_id": "EV_PYTHON", "title": "Advanced Python", "type": "course",
+        "skills": {"SK_PYTHON": {"gain": 1, "max_level": 5}},
+    }]
+    result = recommend(data)
+    assert [item["event_id"] for item in result["recommendations"]] == ["EV_DESIGN"]
+
+
+def test_fallback_can_offer_enrichment_when_no_grade_gap_event_exists() -> None:
+    data = payload()
+    data["employee"]["skills"]["SK_SYSTEM_DESIGN"] = 4
+    data["events"] = [data["events"][1]]
+    result = recommend(data)
+    assert [item["event_id"] for item in result["recommendations"]] == ["EV_SPEAK"]
 
 
 def test_malformed_starter_kit_event_returns_validation_error() -> None:

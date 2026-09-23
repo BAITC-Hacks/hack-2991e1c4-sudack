@@ -72,7 +72,7 @@ class ScoringService:
             gap_closed = sum(contributions.values())
             score = gap_closed * engagement**0.7
             primary = max(contributions, key=lambda skill: (contributions[skill], skill in request.next_grade_requirements))
-            factors = self._factors(request, gains, primary, similar, completed_similar)
+            factors = self._factors(request, gains, contributions, primary, similar, completed_similar)
             candidates.append(Candidate(event, score, gap_closed, engagement, gains, factors, primary))
 
         return self._diversify(candidates)
@@ -85,31 +85,41 @@ class ScoringService:
     def _factors(
         request: RecommendRequest,
         gains: dict[str, tuple[int, int]],
+        contributions: dict[str, float],
         primary: str,
         similar: list,
         completed_similar: int,
     ) -> list[dict]:
-        current, new = gains[primary]
-        required = request.next_grade_requirements.get(primary)
-        name = request.skills_meta.get(primary).name if primary in request.skills_meta else primary
-        if required is None:
-            relevance = {"type": "grade_requirement", "text": f"{name} is outside the stated next-grade requirements"}
-            gap = {"type": "skill_gap", "skill": primary, "current": current, "required": None}
-        else:
-            critical = primary in request.critical_skills
-            relevance = {"type": "grade_requirement", "text": (
-                f"{name} is {'critical' if critical else 'required'} for {request.next_grade}"
-            )}
-            gap = {"type": "skill_gap", "skill": primary, "current": current, "required": required}
         missed = sum(entry.status in {"skipped", "no_show", "declined", "dropped"} for entry in similar)
-        return [
-            relevance,
-            gap,
-            {"type": "history", "text": (
-                f"{completed_similar} of {len(similar)} similar activities completed; {missed} missed"
-            ), "completed": completed_similar, "total": len(similar), "missed": missed},
-            {"type": "effective_gain", "skill": primary, "from": current, "to": new},
-        ]
+        history = {"type": "history", "text": (
+            f"{completed_similar} of {len(similar)} similar activities completed; {missed} missed"
+        ), "completed": completed_similar, "total": len(similar), "missed": missed}
+        factors = []
+        for skill in [primary, *sorted(set(gains) - {primary})]:
+            current, new = gains[skill]
+            required = request.next_grade_requirements.get(skill)
+            name = request.skills_meta.get(skill).name if skill in request.skills_meta else skill
+            if required is None:
+                relevance = {"type": "grade_requirement", "text": (
+                    f"{name} is outside the stated next-grade requirements"
+                )}
+            else:
+                critical = skill in request.critical_skills
+                relevance = {"type": "grade_requirement", "text": (
+                    f"{name} is {'critical' if critical else 'required'} for {request.next_grade}"
+                )}
+            factors.extend([
+                relevance,
+                {"type": "skill_gap", "skill": skill, "current": current, "required": required},
+            ])
+            if skill == primary:
+                factors.append(history)
+            factors.append({
+                "type": "effective_gain", "skill": skill, "from": current, "to": new,
+                "weight": 1.5 if required is not None else 0.3,
+                "weighted_gap_closed": round(contributions[skill], 4),
+            })
+        return factors
 
     @staticmethod
     def _diversify(candidates: list[Candidate]) -> list[Candidate]:

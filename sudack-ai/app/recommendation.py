@@ -1,6 +1,7 @@
 """Application service combining scoring, explanation, validation and caching."""
 
 import asyncio
+import re
 
 from app.cache import ResponseCache
 from app.explain import ExplanationStrategy, template_explain
@@ -38,13 +39,26 @@ class RecommendationService:
                 proposed = await asyncio.wait_for(
                     self._explainer.select(request, candidates), timeout=self._timeout
                 )
-                selected = self._validate_selection(proposed, candidates)
+                selected = self._validate_selection(proposed, candidates, request)
             except Exception:
                 selected = None
 
         source = "llm" if selected is not None else "fallback"
         if selected is None:
-            selected = [(candidate, template_explain(request, candidate)) for candidate in candidates[:3]]
+            gap_closing = [
+                candidate for candidate in ranked
+                if any(
+                    skill in request.next_grade_requirements
+                    and current < request.next_grade_requirements[skill]
+                    and new > current
+                    for skill, (current, new) in candidate.gains.items()
+                )
+            ]
+            fallback_candidates = gap_closing if gap_closing else ranked
+            selected = [
+                (candidate, template_explain(request, candidate))
+                for candidate in fallback_candidates[:3]
+            ]
 
         recommendations = [
             Recommendation(
@@ -91,7 +105,7 @@ class RecommendationService:
 
     @staticmethod
     def _validate_selection(
-        proposed: list[dict[str, str]], candidates: list[Candidate]
+        proposed: list[dict[str, str]], candidates: list[Candidate], request: RecommendRequest
     ) -> list[tuple[Candidate, str]] | None:
         if not isinstance(proposed, list) or not 1 <= len(proposed) <= 3:
             return None
@@ -104,6 +118,34 @@ class RecommendationService:
             event_id, reason = item.get("event_id"), item.get("reason")
             if event_id not in by_id or event_id in seen or not isinstance(reason, str) or not reason.strip():
                 return None
+            if not RecommendationService._reason_is_grounded(reason, by_id[event_id], request):
+                return None
             seen.add(event_id)
             selected.append((by_id[event_id], reason.strip()))
         return selected
+
+    @staticmethod
+    def _reason_is_grounded(reason: str, candidate: Candidate, request: RecommendRequest) -> bool:
+        if request.lang == "kk" and not re.search(r"[ӘәҒғҚқҢңӨөҰұҮүҺһІі]", reason):
+            return False
+        if request.lang == "ru" and not re.search(r"[А-Яа-яЁё]", reason):
+            return False
+        if request.lang == "en" and (not re.search(r"[A-Za-z]", reason)
+                                     or re.search(r"[А-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүҺһІі]", reason)):
+            return False
+
+        history_terms = {
+            "ru": r"истор|похож|аналогич|мероприят|активност|заверш|пропуст|участ",
+            "kk": r"тарих|ұқсас|аяқтал|қатыс|өткіз|шара",
+            "en": r"histor|similar|complet|attend|miss|participat|activit",
+        }
+        if not re.search(history_terms[request.lang], reason, re.IGNORECASE):
+            return False
+
+        gap = next(factor for factor in candidate.factors if factor["type"] == "skill_gap")
+        history = next(factor for factor in candidate.factors if factor["type"] == "history")
+        gain = next(factor for factor in candidate.factors if factor["type"] == "effective_gain")
+        numbers = [gap["current"], gap["required"], gain["to"],
+                   history["completed"], history["total"]]
+        return all(number is None or re.search(rf"(?<!\d){number}(?!\d)", reason)
+                   for number in numbers)

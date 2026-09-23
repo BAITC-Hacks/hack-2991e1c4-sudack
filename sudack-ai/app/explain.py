@@ -20,6 +20,11 @@ class SDKExplanationStrategy:
         self._structured = structured
 
     async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> list[dict[str, str]]:
+        language_instruction = {
+            "ru": "Write every reason in Russian using Cyrillic.",
+            "kk": "Write every reason in Kazakh using Kazakh Cyrillic, not English or Russian.",
+            "en": "Write every reason in English.",
+        }[request.lang]
         prompt = {
             "next_grade": request.next_grade,
             "lang": request.lang,
@@ -45,9 +50,11 @@ class SDKExplanationStrategy:
                 {"role": "system", "content": (
                     "You are a career navigator. Return JSON with 1 to 3 recommendations. "
                     "Select only candidate event IDs. Use only facts provided in factors; never invent figures. "
-                    "Explain next-grade requirements, skill gaps, participation history, and real gains. "
-                    "Mention missed similar activities tactfully. Write 2-3 short sentences in the requested "
-                    "language (ru, kk, or en), addressing the employee respectfully. Do not compare employees."
+                    "In each reason state the exact current and required skill levels, the exact level after "
+                    "the activity, and the exact completed/total similar activity counts from factors. "
+                    "Explain the next-grade requirement, skill gap, participation history, and real gain. "
+                    "Mention missed similar activities tactfully. Write 2-3 short sentences, addressing "
+                    f"the employee respectfully. {language_instruction} Do not compare employees."
                 )},
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
@@ -86,6 +93,13 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
     required = request.next_grade_requirements.get(primary)
     history = next(factor for factor in candidate.factors if factor["type"] == "history")
     total, completed, missed = history["total"], history["completed"], history["missed"]
+    other_gains = []
+    for skill, (old, improved) in candidate.gains.items():
+        if skill == primary:
+            continue
+        other_name = request.skills_meta.get(skill).name if skill in request.skills_meta else skill
+        other_required = request.next_grade_requirements.get(skill)
+        other_gains.append((other_name, old, improved, other_required))
 
     if request.lang == "kk":
         if required is None:
@@ -95,6 +109,10 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
                      f"қазір {current}, ал бұл шарадан кейін {new} болады.")
         second = (f"Ұқсас {total} шараның {completed} аяқталды, {missed} өткізіліп алынды."
                   if total else "Ұқсас шараларға қатысу тарихы жоқ.")
+        extra = ("Қосымша өсім: " + ", ".join(
+            f"{name} {old}→{improved}" + (f" (қажет {needed})" if needed is not None else "")
+            for name, old, improved, needed in other_gains
+        ) + ".") if other_gains else None
     elif request.lang == "en":
         if required is None:
             first = f"{name} will improve from {current} to {new}."
@@ -103,6 +121,10 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
                      f"this activity raises it to {new}.")
         second = (f"You completed {completed} of {total} similar activities and missed {missed}."
                   if total else "You have no history of similar activities.")
+        extra = ("Other gains: " + ", ".join(
+            f"{name} {old}→{improved}" + (f" (required {needed})" if needed is not None else "")
+            for name, old, improved, needed in other_gains
+        ) + ".") if other_gains else None
     else:
         if required is None:
             first = f"Навык {name} вырастет с {current} до {new}."
@@ -111,4 +133,8 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
                      f"сейчас {current}, после активности будет {new}.")
         second = (f"Вы завершили {completed} из {total} похожих активностей и пропустили {missed}."
                   if total else "У вас пока нет истории похожих активностей.")
-    return f"{first} {second}"
+        extra = ("Другие улучшения: " + ", ".join(
+            f"{name} {old}→{improved}" + (f" (требуется {needed})" if needed is not None else "")
+            for name, old, improved, needed in other_gains
+        ) + ".") if other_gains else None
+    return " ".join(part for part in (first, extra, second) if part)

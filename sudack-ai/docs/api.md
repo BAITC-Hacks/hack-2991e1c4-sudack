@@ -51,7 +51,7 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
       {"type": "grade_requirement", "text": "System Design is required for Senior"},
       {"type": "skill_gap", "skill": "SK_SYSTEM_DESIGN", "current": 2, "required": 4},
       {"type": "history", "text": "0 of 0 similar activities completed; 0 missed", "completed": 0, "total": 0, "missed": 0},
-      {"type": "effective_gain", "skill": "SK_SYSTEM_DESIGN", "from": 2, "to": 3}
+      {"type": "effective_gain", "skill": "SK_SYSTEM_DESIGN", "from": 2, "to": 3, "weight": 1.5, "weighted_gap_closed": 1.5}
     ],
     "calculation": {"gap_closed": 1.5, "engagement": 0.5, "formula": "1.5000 * 0.5000^0.7"}
   }],
@@ -60,7 +60,7 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
 }
 ```
 
-`source` is `llm` only when a validated LLM selection is returned; otherwise it is `fallback`. The service gives the LLM the top five deterministic candidates, validates its 1–3 selected IDs and nonempty reasons, and falls back on invalid output or a timeout. The LLM attempt has an eight-second default budget across configured providers. `score` is a raw ranking value, not a probability. `readiness.after_top` applies the first recommendation's gains only. Responses are cached per process using the full request context.
+`source` is `llm` only when a validated LLM selection is returned; otherwise it is `fallback`. The service gives the LLM the top five deterministic candidates. It checks the 1–3 selected IDs, reason language, and key numeric facts, then falls back on invalid output or a timeout. The deterministic fallback returns up to three gap-closing events when any are eligible; otherwise it may offer broader development. The LLM attempt has an eight-second default budget across configured providers. `score` is a raw ranking value, not a probability. For events that develop several skills, factors include each skill's weighted contribution; these sum to `calculation.gap_closed`. `readiness.after_top` applies the first recommendation's gains only. Responses are cached per process using the full request context.
 
 Errors: HTTP `422` with FastAPI's validation `detail` array for malformed JSON, missing fields, invalid skill levels, or unsupported `lang`. No upstream failure status is returned by this endpoint because LLM failures use the fallback.
 
