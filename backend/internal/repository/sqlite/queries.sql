@@ -1,3 +1,6 @@
+-- name: Select1 :one
+SELECT 1;
+
 -- name: GetEmployee :one
 SELECT id, role, grade, tenure_months FROM employees WHERE id = ?;
 

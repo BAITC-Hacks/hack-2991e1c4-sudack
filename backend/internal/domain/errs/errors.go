@@ -23,5 +23,6 @@ func NewError(httpCode int, code string, message string) *Error {
 }
 
 var (
-	ErrInvalidParameter = NewError(http.StatusBadRequest, "INVALID_PARAMETER", "invalid parameter")
+	ErrInvalidParameter    = NewError(http.StatusBadRequest, "INVALID_PARAMETER", "invalid parameter")
+	ErrDatabaseUnavailable = NewError(http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "database unavailable")
 )

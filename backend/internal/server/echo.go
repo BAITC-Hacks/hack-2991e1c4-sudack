@@ -15,6 +15,7 @@ type Server struct {
 func NewServer(h *handler.Handler) (*Server, error) {
 	e := echo.New()
 	e.HTTPErrorHandler = newEchoErrorHandler()
+	e.GET("/healthz", h.Health)
 
 	return &Server{
 		echo: e,
