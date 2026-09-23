@@ -13,3 +13,5 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_model: str = "meta/llama-3.1-8b-instruct"
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_model: str | None = None
+    llm_timeout: float = 8.0
