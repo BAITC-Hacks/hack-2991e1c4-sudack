@@ -24,6 +24,8 @@ The full request and response contract, examples, and error codes are in [docs/a
 
 `POST /recommend` accepts one employee, next-grade requirements, history, and an activity catalog. It returns up to three recommendations with scores, factual factors, a calculation, readiness, and `source` (`llm` or `fallback`). `POST /score/batch` scores many employees without any LLM call. Go supplies all context; this service has no database or authorization rules. See [docs/data-integration.md](docs/data-integration.md) for the supplied Career Quest dataset.
 
+`POST /simulate` returns a dated roadmap of activities to the next grade with the readiness path, total hours, and the skills the catalog cannot raise (and why). `POST /events/impact` estimates a draft HR event's effect across the workforce: who can attend, who closes a gap, expected completions from history, hours per closed skill level, and rank against the existing catalog. `/recommend` also returns `rejected`, the counterfactual for the jury's trap profiles (why the largest-gap skill is not first), and `/score/batch` returns a dropout `risk` per employee with machine-readable reasons and a suggested event format.
+
 `GET /health` returns `{"status":"ok"}`. The API also exposes generated OpenAPI documentation at `/docs`.
 
 ## Structure
@@ -34,6 +36,7 @@ The full request and response contract, examples, and error codes are in [docs/a
 - `app/scoring.py`: pure scoring and eligibility logic
 - `app/explain.py`: OpenAI SDK provider strategies with failover, and the multilingual template fallback
 - `app/recommendation.py`: recommendation orchestration and LLM output validation
+- `app/insights.py`: why-not counterfactuals, grade roadmap simulator, dropout risk, draft-event impact
 - `app/cache.py`: bounded, process-local response cache for validated LLM answers
 - `scripts/audit_verdict.py`: one-call live audit of a starter-kit employee
 - `tests/`: unit, trap-profile, and HTTP tests using fakes; the dataset test runs all 200 kit employees

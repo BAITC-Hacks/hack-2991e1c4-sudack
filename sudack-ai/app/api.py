@@ -5,7 +5,11 @@ from openai import AsyncOpenAI
 
 from app.config import Settings
 from app.explain import FailoverExplanationStrategy, SDKExplanationStrategy
-from app.models import BatchRequest, BatchResponse, RecommendRequest, RecommendResponse
+from app.insights import event_impact, simulate
+from app.models import (
+    BatchRequest, BatchResponse, ImpactRequest, ImpactResponse, RecommendRequest,
+    RecommendResponse, SimulateResponse,
+)
 from app.recommendation import RecommendationService
 
 
@@ -55,5 +59,13 @@ def create_app(recommendation_service: RecommendationService | None = None) -> F
     @app.post("/score/batch", response_model=BatchResponse)
     def score_batch(body: BatchRequest, request: Request) -> BatchResponse:
         return request.app.state.recommendation_service.score_batch(body)
+
+    @app.post("/simulate", response_model=SimulateResponse)
+    def simulate_grade(body: RecommendRequest) -> SimulateResponse:
+        return SimulateResponse(**simulate(body))
+
+    @app.post("/events/impact", response_model=ImpactResponse)
+    def impact(body: ImpactRequest) -> ImpactResponse:
+        return ImpactResponse(**event_impact(body.event, body.items))
 
     return app
