@@ -124,10 +124,6 @@ docker run --rm -v "$PWD:/work" -w /work/backend golang:1.26.1-bookworm go test 
 
 Кого удобно открыть на демо: `E0028` (Middle Backend, казахский язык), `E0002` (Middle Backend, русский, маршрут из пяти шагов), `E0008` (Senior Frontend, английский), `E0025` (Junior Data Analyst, казахский) и ловушечные `E0901`–`E0903` после импорта.
 
-```bash
-# (конец команд проверки)
-```
-
 Живая проверка LLM-слоя одним вызовом для любого сотрудника кита: `cd sudack-ai && uv run python scripts/audit_verdict.py --live E0002`.
 
 ## Статус

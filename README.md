@@ -124,10 +124,6 @@ End-to-end through the Go API (demo login, profile, recommendations, roadmap, HR
 
 Good employees to click through: `E0028` (Middle Backend, Kazakh UI language), `E0002` (Middle Backend, Russian, five-step roadmap), `E0008` (Senior Frontend, English), `E0025` (Junior Data Analyst, Kazakh), and the trap profiles `E0901`–`E0903` after import.
 
-```bash
-# (end of verification commands)
-```
-
 A live one-call audit of the LLM layer for any kit employee: `cd sudack-ai && uv run python scripts/audit_verdict.py --live E0002`.
 
 ## Status
