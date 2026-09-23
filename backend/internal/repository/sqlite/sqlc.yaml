@@ -1,18 +1,10 @@
 version: "2"
-overrides:
-  go:
-    overrides:
-
 sql:
-  - queries:
-      - "users.sql"
-      - "events.sql"
-      - "seats.sql"
-      - "bookings.sql"
+  - engine: "sqlite"
     schema: "../../migrations"
-    engine: "sqlite"
+    queries: "queries.sql"
     gen:
       go:
-        out: "."
         package: "sqlite"
-        omit_unused_structs: true
+        out: "."
+        emit_json_tags: true
