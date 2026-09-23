@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from sudack_ai.generation import (
+from app.generation import (
     ChatCompletionsStrategy,
     GenerationService,
     ProviderNotConfigured,

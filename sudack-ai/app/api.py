@@ -4,8 +4,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from sudack_ai.config import Settings
-from sudack_ai.generation import (
+from app.config import Settings
+from app.generation import (
     ChatCompletionsStrategy,
     GenerationService,
     ProviderNotConfigured,

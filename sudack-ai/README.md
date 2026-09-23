@@ -32,9 +32,9 @@ The `provider` field is optional and uses `DEFAULT_PROVIDER` when omitted. A suc
 
 ## Structure
 
-- `sudack_ai/api.py`: HTTP contract and application assembly
-- `sudack_ai/config.py`: environment configuration
-- `sudack_ai/generation.py`: generation interface, strategy, and selection service
+- `app/api.py`: HTTP contract and application assembly
+- `app/config.py`: environment configuration
+- `app/generation.py`: generation interface, strategy, and selection service
 - `tests/`: unit and HTTP tests using fakes and an in-memory HTTP transport
 
 Add a new provider by implementing `GenerationStrategy` and registering it in application assembly. Tests use injected strategies and never call a live provider.

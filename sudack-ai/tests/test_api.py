@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from sudack_ai.api import create_app
-from sudack_ai.generation import GenerationService, ProviderNotConfigured, UpstreamProviderError
+from app.api import create_app
+from app.generation import GenerationService, ProviderNotConfigured, UpstreamProviderError
 
 
 class FakeStrategy:
