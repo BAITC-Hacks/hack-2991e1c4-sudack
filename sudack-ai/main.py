@@ -1,6 +1,3 @@
-def main():
-    print("Hello from sudack-ai!")
+from sudack_ai.api import create_app
 
-
-if __name__ == "__main__":
-    main()
+app = create_app()
