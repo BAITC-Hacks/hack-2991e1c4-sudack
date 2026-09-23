@@ -1,3 +1,5 @@
+🇬🇧 English · 🇷🇺 [Русский](README.ru.md)
+
 # Career Quest by Sudack
 
 An AI career navigator for employees and HR, built by team Sudack for the HackAlem AI hackathon (Halyk Bank track, case "Career Quest"). An employee opens their profile and sees where they stand against the next grade, gets one to three recommended development activities with an explanation grounded in several factors, marks an activity as done and sees progress move. HR sees which skills sag across the company, who has no useful next step, who is dropping out of development, and what a new event would change before it is created.
@@ -94,6 +96,7 @@ Full formulas, worked examples and the live audit log are in `sudack-ai/README.m
 
 ```
 README.md                 this file
+README.ru.md              Russian version
 docker-compose.yml        full stack
 .env.example              keys and frontend mode
 docs/jury-profiles/       three trap profiles in kit format with expected answers
@@ -105,7 +108,7 @@ sudack-ai/                FastAPI AI service, tests, dataset copy, API docs
 ## Verifying
 
 ```bash
-cd sudack-ai && uv run pytest         # 59 tests: trap profiles, contract, dataset run over 200 employees, LLM validation
+cd sudack-ai && uv run pytest         # 70 tests: trap profiles, contract, dataset run over 200 employees, LLM validation
 cd frontend && npm run lint && npm run build
 ```
 
