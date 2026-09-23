@@ -1,0 +1,20 @@
+{
+  "employee": {
+    "employee_id": "E0028",
+    "role": "Backend Engineer",
+    "grade": "Middle",
+    "skills": {"SK_SYSTEM_DESIGN": 2}
+  },
+  "next_grade": "Senior",
+  "next_grade_requirements": {"SK_SYSTEM_DESIGN": 4},
+  "skills_meta": {"SK_SYSTEM_DESIGN": {"name": "System Design"}},
+  "history": [],
+  "events": [{
+    "event_id": "EV07",
+    "title": "System Design Workshop",
+    "type": "workshop",
+    "audience": {"roles": ["Backend Engineer"], "grades": ["Middle"]},
+    "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}
+  }],
+  "lang": "en"
+}
