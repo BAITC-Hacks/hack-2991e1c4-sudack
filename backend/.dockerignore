@@ -1,0 +1,6 @@
+.git
+.local
+.idea
+.codex
+*.db
+*.db-*
