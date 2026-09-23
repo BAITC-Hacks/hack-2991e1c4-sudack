@@ -2,7 +2,7 @@
 
 Run the service from the repository root with `uv run uvicorn main:app --reload --port 8001`. The examples below use `http://127.0.0.1:8001`. FastAPI also serves an interactive OpenAPI page at `/docs` and the schema at `/openapi.json`.
 
-The API currently has no caller authentication; Go handles access control. Recommendations and batch scoring need no provider credentials. Recommendation responses use a template when no LLM provider is configured or every configured provider fails, times out, or returns ungrounded text. Put `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in the local `.env` file to enable LLM explanations.
+The API currently has no caller authentication; Go handles access control. Recommendations and batch scoring need no provider credentials. Recommendation responses use a template when no LLM provider is configured or every configured provider fails, times out, or returns ungrounded text. Put `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in the local `.env` file to enable LLM explanations. `LLM_PROVIDERS` (default `openai,nvidia`) sets the failover order; `GET /providers` shows the active chain.
 
 ## `GET /health`
 
@@ -17,6 +17,29 @@ Success: HTTP `200`, `application/json`:
 ```json
 {"status":"ok"}
 ```
+
+## `GET /providers`
+
+Shows the LLM provider chain the running process built from its configuration. No parameters. Keys are never returned.
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8001/providers
+```
+
+```json
+{
+  "providers": [
+    {"name": "openai", "model": "gpt-4o", "base_url": "https://api.openai.com/v1", "structured_output": true},
+    {"name": "nvidia", "model": "nvidia/llama-3.1-nemotron-70b-instruct", "base_url": "https://integrate.api.nvidia.com/v1", "structured_output": false}
+  ],
+  "order": ["openai", "nvidia"],
+  "budget_seconds": 8.0,
+  "primary_share": 0.75,
+  "explanations": "llm_with_template_fallback"
+}
+```
+
+Every provider speaks the OpenAI chat-completions protocol through the same SDK, so a provider is a base URL, a key and a model name. `LLM_PROVIDERS` orders the chain (for example `nvidia,openai` to make NVIDIA primary); a provider whose key is empty is skipped; with no providers `explanations` is `template`. `structured_output` says whether strict JSON-schema mode is requested; when it is `false` the prompt still demands JSON and local validation protects the contract. The chain runs against one deadline of `LLM_TIMEOUT` seconds (`budget_seconds`): a provider that fails fast (for example `401`) hands all remaining time to the next one, and a provider that is not last is capped at `primary_share` of the remaining time, so a hanging primary cannot starve the secondary.
 
 ## `POST /recommend`
 
@@ -62,6 +85,8 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
   "readiness": {"current": 0.5, "after_top": 0.75},
   "gaps": {"SK_SYSTEM_DESIGN": 2},
   "applied_progress": [],
+  "llm_provider": null,
+  "llm_model": null,
   "rejected": [{
     "event_id": "EV_SPEAK", "title": "Public Speaking Club", "skill": "SK_PUBLIC_SPEAKING",
     "current": 0, "required": 2, "score": 0.4872, "recommended_position": 2,
@@ -71,9 +96,9 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
 }
 ```
 
-`rejected` is the counterfactual for the jury's trap profiles: up to two alternatives a one-factor rule would put first (the skill with the largest gap, then the next best by score) and why each lost to the top recommendation. Each entry has the skill, its levels, the alternative event (or `event_id: null` with a reason when no eligible event develops that skill), the position it still holds in `recommendations` if any, and a sentence in `lang` built from the same factors: missed history on that skill, critical versus non-critical, outside the requirements, or a smaller weighted contribution.
+`llm_provider` and `llm_model` name the provider and model whose selection was used (`openai`/`gpt-4o`, `nvidia`/...), or `null` when `source` is `fallback`; the UI can show which engine answered and prove failover live. `rejected` is the counterfactual for the jury's trap profiles: up to two alternatives a one-factor rule would put first (the skill with the largest gap, then the next best by score) and why each lost to the top recommendation. Each entry has the skill, its levels, the alternative event (or `event_id: null` with a reason when no eligible event develops that skill), the position it still holds in `recommendations` if any, and a sentence in `lang` built from the same factors: missed history on that skill, critical versus non-critical, outside the requirements, or a smaller weighted contribution.
 
-`source` is `llm` when the LLM chose the events and at least one of its reasons passed validation; otherwise it is `fallback`. Each recommendation also carries `reason_source`: `llm` for validated LLM prose, `template` for the deterministic multilingual explanation. The service gives the LLM up to five gap-closing candidates (padded with enrichment events only when fewer than three close a gap) as plain facts: skill names, current/required/after levels, a `critical` flag, a `closes_gap` flag, the event description, and history counts; scoring weights are never shown to the model. A returned item must name a candidate ID; its reason must be in the requested language, mention participation history, contain the exact current, required and resulting levels, and not duplicate another reason. A reason that fails keeps the event but is replaced by the template for that event. When no LLM reason survives, or the LLM times out, the deterministic fallback returns up to three gap-closing events when any are eligible; otherwise it may offer broader development. `gaps` lists required skills still below the target level. `applied_progress` lists skill increases the service applied from completions dated after `employee.last_review_date`, each as `{event_id, skill, from, to}`; the profile skills plus these entries are the levels used in factors and readiness. The LLM attempt has an eight-second default budget, split equally between configured providers so a hanging first provider cannot starve the second. `score` is a raw ranking value, not a probability. For events that develop several skills, factors include each skill's weighted contribution; these sum to `calculation.gap_closed`. The `history` factor separates activities on the same skills (`completed`, `total`, `missed`) from same-type activities on other skills (`same_type_*`), which count with weight 0.3 in engagement. `in_progress` history is excluded from engagement until its outcome is known; `overdue` counts as missed. `readiness.after_top` applies the first recommendation's gains only. Only `llm` responses are cached per process, keyed by the full request context; a fallback answer is recomputed on the next call.
+`source` is `llm` when the LLM chose the events and at least one of its reasons passed validation; otherwise it is `fallback`. Each recommendation also carries `reason_source`: `llm` for validated LLM prose, `template` for the deterministic multilingual explanation. The service gives the LLM up to five gap-closing candidates (padded with enrichment events only when fewer than three close a gap) as plain facts: skill names, current/required/after levels, a `critical` flag, a `closes_gap` flag, the event description, and history counts; scoring weights are never shown to the model. A returned item must name a candidate ID; its reason must be in the requested language, mention participation history, contain the exact current, required and resulting levels, and not duplicate another reason. A reason that fails keeps the event but is replaced by the template for that event. When no LLM reason survives, or the LLM times out, the deterministic fallback returns up to three gap-closing events when any are eligible; otherwise it may offer broader development. `gaps` lists required skills still below the target level. `applied_progress` lists skill increases the service applied from completions dated after `employee.last_review_date`, each as `{event_id, skill, from, to}`; the profile skills plus these entries are the levels used in factors and readiness. The LLM attempt has an eight-second default budget shared by the provider chain under one deadline; see `GET /providers`. `score` is a raw ranking value, not a probability. For events that develop several skills, factors include each skill's weighted contribution; these sum to `calculation.gap_closed`. The `history` factor separates activities on the same skills (`completed`, `total`, `missed`) from same-type activities on other skills (`same_type_*`), which count with weight 0.3 in engagement. `in_progress` history is excluded from engagement until its outcome is known; `overdue` counts as missed. `readiness.after_top` applies the first recommendation's gains only. Only `llm` responses are cached per process, keyed by the full request context; a fallback answer is recomputed on the next call.
 
 Errors: HTTP `422` with FastAPI's validation `detail` array for malformed JSON, missing fields, invalid skill levels, or unsupported `lang`. No upstream failure status is returned by this endpoint because LLM failures use the fallback.
 

@@ -609,3 +609,123 @@ def test_llm_view_gives_a_ready_made_levels_fact_per_skill() -> None:
     fact = view["skills"][0]["fact"]
     assert fact == "System Design: current 2, required 4 for Senior (critical), after this activity 3"
     assert "System Design: current 2, required 4 for Senior (critical), after this activity 3" in view["facts_sentence"]
+
+
+# --- Provider switching --------------------------------------------------------
+
+
+def test_failover_reports_which_provider_answered() -> None:
+    from app.explain import FailoverExplanationStrategy
+
+    class Down:
+        name = "openai"
+
+        async def select(self, *_args, **_kwargs):
+            raise RuntimeError("provider down")
+
+    class Up:
+        name = "nvidia"
+
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": "ok"}]
+
+    strategy = FailoverExplanationStrategy([Down(), Up()])
+    request = RecommendRequest.model_validate(payload())
+    candidates = ScoringService().rank(request)[:5]
+    proposal = asyncio.run(strategy.select(request, candidates))
+    assert list(proposal) == [{"event_id": "EV_DESIGN", "reason": "ok"}]
+    assert proposal.provider == "nvidia"
+
+
+def test_recommend_response_names_the_llm_provider() -> None:
+    from app.explain import FailoverExplanationStrategy
+
+    class Nvidia:
+        name = "nvidia"
+
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": (
+                "For Senior, System Design is 2 against 4 and this raises it to 3. "
+                "You have no similar activity history."
+            )}]
+
+    data = payload()
+    data["lang"] = "en"
+    service = RecommendationService(explainer=FailoverExplanationStrategy([Nvidia()]))
+    result = asyncio.run(service.recommend(RecommendRequest.model_validate(data)))
+    assert result.source == "llm"
+    assert result.llm_provider == "nvidia"
+
+
+def test_fallback_response_has_no_provider() -> None:
+    result = asyncio.run(RecommendationService().recommend(RecommendRequest.model_validate(payload())))
+    assert result.source == "fallback"
+    assert result.llm_provider is None
+
+
+def test_providers_endpoint_lists_configured_providers_in_order(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    monkeypatch.setenv("LLM_PROVIDERS", "nvidia,openai")
+    monkeypatch.setenv("NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct")
+    with TestClient(create_app()) as client:
+        body = client.get("/providers").json()
+    assert [item["name"] for item in body["providers"]] == ["nvidia", "openai"]
+    assert body["providers"][0]["model"] == "nvidia/llama-3.1-nemotron-70b-instruct"
+    assert body["providers"][0]["structured_output"] is False
+    assert body["providers"][1]["structured_output"] is True
+    assert "nvapi" not in str(body) and "sk-test" not in str(body)
+
+
+def test_providers_endpoint_skips_unconfigured_and_reports_fallback_only(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("NVIDIA_API_KEY", "")
+    with TestClient(create_app()) as client:
+        body = client.get("/providers").json()
+    assert body["providers"] == []
+    assert body["explanations"] == "template"
+
+
+def test_failover_gives_remaining_budget_to_the_next_provider_after_a_fast_failure() -> None:
+    from app.explain import FailoverExplanationStrategy
+
+    class FailsFast:
+        name = "nvidia"
+
+        async def select(self, *_args, **_kwargs):
+            raise RuntimeError("401")
+
+    class Slow:
+        name = "openai"
+
+        async def select(self, *_args, **_kwargs):
+            await asyncio.sleep(0.3)  # longer than half the budget, shorter than the whole budget
+            return [{"event_id": "EV_DESIGN", "reason": "ok"}]
+
+    strategy = FailoverExplanationStrategy([FailsFast(), Slow()], budget=0.5)
+    request = RecommendRequest.model_validate(payload())
+    candidates = ScoringService().rank(request)[:5]
+    proposal = asyncio.run(strategy.select(request, candidates))
+    assert proposal.provider == "openai"
+
+
+def test_failover_caps_a_hanging_primary_so_the_secondary_still_runs() -> None:
+    from app.explain import FailoverExplanationStrategy
+
+    class Hangs:
+        name = "openai"
+
+        async def select(self, *_args, **_kwargs):
+            await asyncio.sleep(5)
+
+    class Quick:
+        name = "nvidia"
+
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": "ok"}]
+
+    strategy = FailoverExplanationStrategy([Hangs(), Quick()], budget=0.4)
+    request = RecommendRequest.model_validate(payload())
+    candidates = ScoringService().rank(request)[:5]
+    proposal = asyncio.run(strategy.select(request, candidates))
+    assert proposal.provider == "nvidia"

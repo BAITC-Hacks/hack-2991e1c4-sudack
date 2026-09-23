@@ -42,12 +42,16 @@ class RecommendationService:
         candidates = gap_closing[:5] + others[:max(0, 3 - len(gap_closing))]
 
         selected: list[tuple[Candidate, str, str]] | None = None
+        provider = model = None
         if candidates and self._explainer is not None:
             try:
                 proposed = await asyncio.wait_for(
                     self._explainer.select(request, candidates), timeout=self._timeout
                 )
                 selected = self._validate_selection(proposed, candidates, request)
+                if selected is not None:
+                    provider = getattr(proposed, "provider", None) or getattr(self._explainer, "name", None)
+                    model = getattr(proposed, "model", None) or getattr(self._explainer, "model", None)
             except Exception:
                 selected = None
 
@@ -91,6 +95,8 @@ class RecommendationService:
             applied_progress=applied,
             rejected=why_not(request, ranked, [candidate for candidate, _, _ in selected], skills),
             source=source,
+            llm_provider=provider if source == "llm" else None,
+            llm_model=model if source == "llm" else None,
         )
         # A template answer produced because the LLM was unavailable must not be
         # pinned until the employee's history changes; only validated LLM output is cached.

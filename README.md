@@ -39,6 +39,8 @@ docker compose up --build
 
 Without an API key the system still works end to end: explanations come from the multilingual template and are labeled `template`. With a key, `LLM_MODEL` defaults to `gpt-4o`, which passed our live audits in Russian, Kazakh and English.
 
+**Interchangeable LLM providers.** The AI service talks to every provider through the OpenAI chat-completions protocol, so a provider is a base URL, a key and a model name. `LLM_PROVIDERS` (default `openai,nvidia`) sets the failover order; `GET /providers` on the AI service shows the active chain; every recommendation names the engine that answered in `llm_provider` and `llm_model`. The chain runs against one deadline (`LLM_TIMEOUT`): a provider that fails fast hands the remaining time to the next one, and no provider except the last may use more than 75% of what is left. Verified live: with `LLM_PROVIDERS=nvidia,openai` the NVIDIA call fails, OpenAI answers, and the response reports `llm_provider: openai`. The hackathon NVIDIA key currently lists models but returns 401 on inference, so NVIDIA acts as a configured standby until the key is activated; details in `sudack-ai/docs/VERDICT_AUDIT.md`.
+
 `FRONTEND_USE_MOCKS` in `.env` controls whether the frontend talks to the Go API (`false`) or runs on the bundled synthetic dataset (`true`, the default while the Go endpoints are being completed). See "Status" below.
 
 ### Running services separately

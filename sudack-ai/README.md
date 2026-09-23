@@ -11,7 +11,7 @@ uv sync
 Copy-Item .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in `.env`. Recommendation uses OpenAI first, then NVIDIA if configured, then a deterministic template. `LLM_MODEL` selects the OpenAI model for recommendations; the example sets `gpt-4o`, which in live audits produced grounded reasons in all three languages, while `gpt-4o-mini` frequently dropped the required level and fell back to the template. `LLM_TIMEOUT` defaults to eight seconds for the complete LLM attempt, shared equally between configured providers. No key is needed for scoring, tests, or health checks.
+Set `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in `.env`. Recommendation walks the provider chain in `LLM_PROVIDERS` (default `openai,nvidia`), then falls back to a deterministic template; `GET /providers` shows the chain and every response names the provider that answered in `llm_provider`. Providers are interchangeable OpenAI-compatible endpoints, so NVIDIA NIM, a local vLLM or Ollama server is a base URL, a key and a model name. `LLM_MODEL` selects the OpenAI model for recommendations; the example sets `gpt-4o`, which in live audits produced grounded reasons in all three languages, while `gpt-4o-mini` frequently dropped the required level and fell back to the template. `LLM_TIMEOUT` defaults to eight seconds for the complete LLM attempt as one deadline across the provider chain. No key is needed for scoring, tests, or health checks.
 
 ```powershell
 uv run uvicorn main:app --reload --port 8001
@@ -51,6 +51,6 @@ Engagement is a Laplace-smoothed completion rate. Past activities that develop a
 
 Skill levels in the profile reflect the last assessment, so completions dated after `last_review_date` are applied on top before scoring and reported as `applied_progress`. This is also how marking an activity as done moves progress: Go appends a completed history row and the next call reflects the new level. Readiness measures how much of the weighted next-grade skill requirements is met; `after_top` applies only the first recommendation's gains. The score is a ranking value, not a probability. Results with repeated primary skills receive a 0.8 ordering penalty, while the reported score and calculation remain the raw values.
 
-To audit one starter-kit employee with a single paid OpenAI call, run `uv run python scripts/audit_verdict.py --live E0002`. The script disables SDK retries and NVIDIA failover. Its output shows the top scored candidates and the accepted verdict; run it only when an API call is intended.
+To audit one starter-kit employee with a single paid call, run `uv run python scripts/audit_verdict.py --live E0002 --provider openai` (or `--provider nvidia`). The script disables SDK retries and failover so exactly one provider is exercised. Its output shows the top scored candidates and the accepted verdict; run it only when an API call is intended.
 
 The [two-case verdict audit](docs/VERDICT_AUDIT.md) records the observed live outputs and the resulting validation and explanation fixes.

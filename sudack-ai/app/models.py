@@ -130,6 +130,8 @@ class RecommendResponse(BaseModel):
     applied_progress: list[dict[str, Any]] = Field(default_factory=list)
     rejected: list[dict[str, Any]] = Field(default_factory=list)
     source: Literal["llm", "fallback"]
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class BatchRequest(BaseModel):
