@@ -275,3 +275,36 @@ def test_simulate_self_paced_after_prerequisite_step_starts_next_day() -> None:
     result = simulate(data)
     dates = {step["event_id"]: step["date"] for step in result["steps"]}
     assert dates == {"EV_BASE": "2026-10-10", "EV_SELF": "2026-10-11"}
+
+
+def test_why_not_on_equal_gap_explains_engagement_and_only_largest_gap_is_called_so() -> None:
+    data = payload()
+    data["employee"]["skills"] = {"SK_SYSTEM_DESIGN": 3, "SK_PUBLIC_SPEAKING": 0, "SK_OTHER": 0}
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 4, "SK_PUBLIC_SPEAKING": 2}
+    data["events"] += [
+        {"event_id": "EV_DESIGN2", "title": "Design 2", "type": "course", "format": "online",
+         "upcoming_sessions": ["2026-11-01"], "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}},
+        {"event_id": "EV_OTHER", "title": "Other course", "type": "course", "format": "online",
+         "upcoming_sessions": ["2026-11-01"], "skills": {"SK_OTHER": {"gain": 1, "max_level": 4}}},
+    ]
+    # A completed course on an unrelated skill gives the course (EV_DESIGN2) weak same-type credit,
+    # so the two System Design events tie on gap but differ on engagement.
+    data["history"] = [{"event_id": "EV_OTHER", "status": "completed", "date": "2026-03-01"}]
+    result = recommend(data)
+    assert result["recommendations"][0]["event_id"] == "EV_DESIGN2"
+    second = next(item for item in result["rejected"] if item["event_id"] == "EV_DESIGN")
+    assert "самый большой разрыв" not in second["reason"]
+    assert "истори" in second["reason"] and "0.50 против 0.57" in second["reason"]
+
+
+def test_why_not_on_full_tie_says_the_events_are_equivalent() -> None:
+    data = payload()
+    data["employee"]["skills"] = {"SK_SYSTEM_DESIGN": 3, "SK_PUBLIC_SPEAKING": 2}
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 4}
+    data["events"].append({"event_id": "EV_DESIGN2", "title": "Design 2", "type": "course", "format": "online",
+                           "upcoming_sessions": ["2026-11-01"],
+                           "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}})
+    result = recommend(data)
+    second = result["rejected"][0]
+    assert second["event_id"] in {"EV_DESIGN", "EV_DESIGN2"}
+    assert "равнозначн" in second["reason"]

@@ -1,0 +1,47 @@
+# Career Quest: one command brings up the whole stack.
+#   cp .env.example .env   # add OPENAI_API_KEY for LLM explanations (optional)
+#   docker compose up --build
+# Frontend http://localhost:3000, Go API http://localhost:8080, AI service http://localhost:8001/docs
+services:
+  ai:
+    build: ./sudack-ai
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-8}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health').status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      PORT: "8080"
+      AI_SERVICE_URL: http://ai:8001
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend-db:/srv/.local/db
+    depends_on:
+      ai:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Next.js bakes NEXT_PUBLIC_* at build time. Browser calls go to the host-published Go port.
+        NEXT_PUBLIC_API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_USE_MOCKS: ${FRONTEND_USE_MOCKS:-true}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  backend-db:

@@ -38,7 +38,10 @@ def _as_of(request: RecommendRequest) -> date | None:
 
 _WHY_NOT = {
     "ru": {
-        "lead": "{name}: {current} при требуемых {required} для {grade}, самый большой разрыв.",
+        "lead": "{name}: {current} при требуемых {required} для {grade}{largest}.",
+        "largest": ", самый большой разрыв",
+        "equal": "вклад в переход и история участия одинаковы, события равнозначны",
+        "engagement": "история участия по этим навыкам слабее ({eng:.2f} против {top_eng:.2f})",
         "no_event": "нет доступных активностей, развивающих этот навык (аудитория, предусловия или потолок уровня).",
         "but": "Но:",
         "missed": "вы пропустили {missed} из {total} активностей по этому навыку",
@@ -47,7 +50,10 @@ _WHY_NOT = {
         "smaller": "вклад в переход меньше ({gap:.2f} против {top_gap:.2f})",
     },
     "kk": {
-        "lead": "{name}: {grade} үшін {required} қажет, қазір {current}, ең үлкен алшақтық.",
+        "lead": "{name}: {grade} үшін {required} қажет, қазір {current}{largest}.",
+        "largest": ", ең үлкен алшақтық",
+        "equal": "үлесі мен қатысу тарихы бірдей, шаралар тең",
+        "engagement": "осы дағдылар бойынша қатысу тарихы әлсіз ({eng:.2f} және {top_eng:.2f})",
         "no_event": "бұл дағдыны дамытатын қолжетімді шара жоқ (аудитория, алғышарттар немесе деңгей шегі).",
         "but": "Бірақ:",
         "missed": "осы дағды бойынша {total} шараның {missed} өткізіп алдыңыз",
@@ -56,7 +62,10 @@ _WHY_NOT = {
         "smaller": "грейдке өтуге үлесі кішірек ({gap:.2f} және {top_gap:.2f})",
     },
     "en": {
-        "lead": "{name}: {current} against {required} needed for {grade}, the largest gap.",
+        "lead": "{name}: {current} against {required} needed for {grade}{largest}.",
+        "largest": ", the largest gap",
+        "equal": "same contribution and history, the events are equivalent",
+        "engagement": "weaker participation history on these skills ({eng:.2f} vs {top_eng:.2f})",
         "no_event": "no available activity develops this skill (audience, prerequisites or level ceiling).",
         "but": "But:",
         "missed": "you missed {missed} of {total} activities on this skill",
@@ -69,6 +78,7 @@ _WHY_NOT = {
 
 def _rejected_item(
     request: RecommendRequest, candidate: Candidate, skill: str, skills: dict[str, int], top: Candidate | None,
+    largest_gap: bool = False,
 ) -> dict:
     text = _WHY_NOT[request.lang]
     required = request.next_grade_requirements.get(skill)
@@ -86,9 +96,15 @@ def _rejected_item(
                 top=_name(request, top.primary_skill), grade=request.next_grade, name=_name(request, skill),
             ))
         if not clauses:
-            clauses.append(text["smaller"].format(gap=candidate.gap_closed, top_gap=top.gap_closed))
+            if abs(candidate.gap_closed - top.gap_closed) < 1e-9 and abs(candidate.engagement - top.engagement) < 1e-9:
+                clauses.append(text["equal"])
+            elif abs(candidate.gap_closed - top.gap_closed) < 1e-9:
+                clauses.append(text["engagement"].format(eng=candidate.engagement, top_eng=top.engagement))
+            else:
+                clauses.append(text["smaller"].format(gap=candidate.gap_closed, top_gap=top.gap_closed))
     lead = text["lead"].format(
         name=_name(request, skill), current=current, required=required, grade=request.next_grade,
+        largest=text["largest"] if largest_gap else "",
     ) if required is not None else f"{_name(request, skill)}: {current}."
     reason = f"{lead} {text['but']} {'; '.join(clauses)}." if clauses else lead
     return {
@@ -117,7 +133,7 @@ def why_not(
     if lowest not in selected_skills:
         alternatives = [c for c in ranked if lowest in c.gains and c.event.event_id not in selected_ids]
         if alternatives:
-            out.append(_rejected_item(request, alternatives[0], lowest, skills, top))
+            out.append(_rejected_item(request, alternatives[0], lowest, skills, top, largest_gap=True))
         else:
             out.append({
                 "event_id": None, "title": None, "skill": lowest, "current": skills.get(lowest, 0),
@@ -125,6 +141,7 @@ def why_not(
                 "reason": text["lead"].format(
                     name=_name(request, lowest), current=skills.get(lowest, 0),
                     required=request.next_grade_requirements[lowest], grade=request.next_grade,
+                    largest=text["largest"],
                 ) + " " + text["but"] + " " + text["no_event"],
             })
 
