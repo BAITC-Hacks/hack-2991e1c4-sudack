@@ -213,3 +213,65 @@ def test_simulate_classifies_blocked_skills_and_reports_coverage() -> None:
     }
     # gap levels: SD 2 (1 closable) + PS 2 (2 closable) + SQL 2 (0) + CLOUD 2 (0) = 8 total, 3 closed
     assert result["coverage"] == {"gap_levels_total": 8, "gap_levels_closed": 3, "ratio": 0.375}
+
+
+def test_simulate_blocked_reasons_distinguish_completed_and_step_limit() -> None:
+    data = payload()
+    # Mentoring: the only event is non-recurring and already completed -> already_completed
+    data["employee"]["skills"]["SK_MENTORING"] = 1
+    data["next_grade_requirements"]["SK_MENTORING"] = 3
+    data["events"].append({"event_id": "EV_MENTOR", "title": "Mentor Track", "type": "mentoring",
+                           "format": "online", "upcoming_sessions": ["2026-11-01"],
+                           "skills": {"SK_MENTORING": {"gain": 1, "max_level": 4}}})
+    data["history"] = [{"event_id": "EV_MENTOR", "status": "completed", "date": "2026-05-01"}]
+    result = simulate(data)
+    reasons = {item["skill"]: item["reason"] for item in result["blocked"]}
+    assert reasons["SK_MENTORING"] == "already_completed"
+
+
+def test_simulate_marks_step_limit_when_roadmap_is_cut() -> None:
+    data = payload()
+    data["employee"]["skills"] = {"SK_SYSTEM_DESIGN": 0, "SK_PUBLIC_SPEAKING": 0}
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 5, "SK_PUBLIC_SPEAKING": 5}
+    data["events"][0]["recurring"] = True
+    data["events"][0]["skills"]["SK_SYSTEM_DESIGN"]["max_level"] = 5
+    data["events"][0]["upcoming_sessions"] = [f"2026-{m:02d}-10" for m in range(10, 13)] + [f"2027-{m:02d}-10" for m in range(1, 8)]
+    data["events"][1]["skills"]["SK_PUBLIC_SPEAKING"]["max_level"] = 5
+    data["events"][1]["upcoming_sessions"] = [f"2026-{m:02d}-05" for m in range(10, 13)] + [f"2027-{m:02d}-05" for m in range(1, 8)]
+    result = simulate(data)  # needs 10 steps, capped at 8
+    assert len(result["steps"]) == 8
+    assert result["reachable"] is False
+    assert {item["reason"] for item in result["blocked"]} == {"step_limit"}
+
+
+def test_simulate_prerequisite_already_met_does_not_delay_scheduling() -> None:
+    data = payload()
+    data["employee"]["skills"]["SK_SYSTEM_DESIGN"] = 3  # prerequisite of EV_ADV already met
+    data["events"] = [
+        {"event_id": "EV_BASE", "title": "Base", "type": "course", "format": "offline",
+         "upcoming_sessions": ["2026-10-10"], "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 5}}},
+        {"event_id": "EV_ADV", "title": "Advanced", "type": "workshop", "format": "offline",
+         "upcoming_sessions": ["2026-10-10", "2026-12-10"], "prerequisites": {"SK_SYSTEM_DESIGN": 3},
+         "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 5}}},
+    ]
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 5}
+    data["as_of"] = "2026-10-01"
+    result = simulate(data)
+    dates = {step["event_id"]: step["date"] for step in result["steps"]}
+    assert dates["EV_ADV"] == "2026-10-10", "no artificial delay when the prerequisite was met before the roadmap"
+
+
+def test_simulate_self_paced_after_prerequisite_step_starts_next_day() -> None:
+    data = payload()
+    data["events"] = [
+        {"event_id": "EV_BASE", "title": "Base", "type": "course", "format": "offline",
+         "upcoming_sessions": ["2026-10-10"], "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 3}}},
+        {"event_id": "EV_SELF", "title": "Self", "type": "course", "format": "self_paced",
+         "upcoming_sessions": [], "prerequisites": {"SK_SYSTEM_DESIGN": 3},
+         "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}},
+    ]
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 4}
+    data["as_of"] = "2026-10-01"
+    result = simulate(data)
+    dates = {step["event_id"]: step["date"] for step in result["steps"]}
+    assert dates == {"EV_BASE": "2026-10-10", "EV_SELF": "2026-10-11"}

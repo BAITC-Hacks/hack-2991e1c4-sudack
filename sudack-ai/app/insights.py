@@ -8,7 +8,7 @@ No provider calls, no persistent state.
 """
 
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 
 from app.models import Event, HistoryEntry, RecommendRequest
 from app.scoring import (
@@ -142,22 +142,24 @@ def why_not(
 
 # --------------------------------------------------------------------------- 2. simulator
 
-
 def simulate(request: RecommendRequest, max_steps: int = 8) -> dict:
     """Greedy roadmap: at each step take the eligible event that closes the most weighted gap,
     apply its gains, and schedule it on the first free session after its prerequisites are met."""
     scoring = ScoringService()
     skills, _ = apply_progress(request)
+    initial = dict(skills)
     requirements, critical = request.next_grade_requirements, request.critical_skills
     as_of = _as_of(request)
     history = list(request.history)
+    completed_ids = {entry.event_id for entry in history if entry.status == "completed"}
     used_sessions: dict[str, set[date]] = {}
-    skill_ready_on: dict[str, date | None] = {}  # when a skill level was raised by a planned step
+    skill_ready_on: dict[str, date | None] = {}  # when a planned step raised a skill
     steps: list[dict] = []
     path = [readiness(skills, requirements, critical)]
     total_hours = 0.0
+    hit_limit = False
 
-    for _ in range(max_steps):
+    while True:
         if not any(gap > 0 for gap in skill_gaps(skills, requirements).values()):
             break
         planned = request.model_copy(update={"history": history})
@@ -165,11 +167,14 @@ def simulate(request: RecommendRequest, max_steps: int = 8) -> dict:
         candidates.sort(key=lambda c: (-c.gap_closed, -c.engagement, c.event.event_id))
         chosen = None
         for candidate in candidates:
-            when = _schedule(candidate.event, as_of, used_sessions, skill_ready_on)
+            when = _schedule(candidate.event, as_of, used_sessions, skill_ready_on, initial)
             if when is not False:
                 chosen = (candidate, when)
                 break
         if chosen is None:
+            break
+        if len(steps) >= max_steps:
+            hit_limit = True
             break
         candidate, when = chosen
         changes = []
@@ -180,6 +185,7 @@ def simulate(request: RecommendRequest, max_steps: int = 8) -> dict:
                             "required": requirements.get(skill)})
         history.append(HistoryEntry(event_id=candidate.event.event_id, status="completed",
                                     date=when.isoformat() if when else None))
+        completed_ids.add(candidate.event.event_id)
         hours = candidate.event.duration_hours or 0.0
         total_hours += hours
         path.append(readiness(skills, requirements, critical))
@@ -191,8 +197,7 @@ def simulate(request: RecommendRequest, max_steps: int = 8) -> dict:
         })
 
     remaining = {s: g for s, g in skill_gaps(skills, requirements).items() if g > 0}
-    initial_gaps = skill_gaps(apply_progress(request)[0], requirements)
-    total_levels = sum(initial_gaps.values())
+    total_levels = sum(skill_gaps(initial, requirements).values())
     closed_levels = total_levels - sum(remaining.values())
     dates = [parse_date(step["date"]) for step in steps if step["date"]]
     return {
@@ -211,14 +216,44 @@ def simulate(request: RecommendRequest, max_steps: int = 8) -> dict:
         "remaining_gaps": remaining,
         "blocked": [
             {"skill": skill, "name": _name(request, skill), "current": skills.get(skill, 0),
-             "required": requirements[skill], "reason": _block_reason(request, skill, skills)}
+             "required": requirements[skill],
+             "reason": _block_reason(request, skill, skills, completed_ids, hit_limit)}
             for skill in remaining
         ],
     }
 
 
-def _block_reason(request: RecommendRequest, skill: str, skills: dict[str, int]) -> str:
-    """Why the catalog cannot raise this skill further, in order of what HR can fix."""
+def _schedule(
+    event: Event, as_of: date | None, used: dict[str, set[date]],
+    ready_on: dict[str, date | None], initial: dict[str, int],
+) -> date | None | bool:
+    """Return the session date for this step, None for undated self-paced work,
+    or False when no free session exists after the steps that satisfy its prerequisites."""
+    earliest, strict = as_of, False
+    for skill, level in event.prerequisites.items():
+        if initial.get(skill, 0) >= level:
+            continue  # was already met before the roadmap; no ordering constraint
+        when = ready_on.get(skill)
+        if when and (earliest is None or when >= earliest):
+            earliest, strict = when, True  # must come after the step that raised the prerequisite
+    sessions = sorted(d for d in (parse_date(s) for s in event.upcoming_sessions or []) if d)
+    if event.format == "self_paced" or not sessions:
+        return earliest + timedelta(days=1) if strict and earliest else earliest
+    taken = used.setdefault(event.event_id, set())
+    for session in sessions:
+        if session in taken:
+            continue
+        if earliest is not None and (session < earliest or (strict and session == earliest)):
+            continue
+        taken.add(session)
+        return session
+    return False
+
+
+def _block_reason(
+    request: RecommendRequest, skill: str, skills: dict[str, int], completed_ids: set[str], hit_limit: bool,
+) -> str:
+    """Why the roadmap cannot raise this skill further, in the order HR can act on it."""
     developing = [e for e in request.events if skill in e.skills and not e.mandatory]
     if not developing:
         return "no_event_for_skill"
@@ -235,31 +270,11 @@ def _block_reason(request: RecommendRequest, skill: str, skills: dict[str, int])
         return "ceiling"
     if all(any(skills.get(s, 0) < level for s, level in e.prerequisites.items()) for e in raising):
         return "prerequisites"
+    if all(e.event_id in completed_ids and not e.recurring for e in raising):
+        return "already_completed"
+    if hit_limit:
+        return "step_limit"
     return "unscheduled"
-
-
-def _schedule(
-    event: Event, as_of: date | None, used: dict[str, set[date]], ready_on: dict[str, date | None],
-) -> date | None | bool:
-    """Return the session date for this step, None for undated self-paced work,
-    or False when no free session exists after the steps that satisfy its prerequisites."""
-    earliest, strict = as_of, False
-    for skill in event.prerequisites:
-        when = ready_on.get(skill)
-        if when and (earliest is None or when >= earliest):
-            earliest, strict = when, True  # must come after the step that raised the prerequisite
-    sessions = sorted(d for d in (parse_date(s) for s in event.upcoming_sessions or []) if d)
-    if event.format == "self_paced" or not sessions:
-        return earliest
-    taken = used.setdefault(event.event_id, set())
-    for session in sessions:
-        if session in taken:
-            continue
-        if earliest is not None and (session < earliest or (strict and session == earliest)):
-            continue
-        taken.add(session)
-        return session
-    return False
 
 
 # --------------------------------------------------------------------------- 3. dropout risk

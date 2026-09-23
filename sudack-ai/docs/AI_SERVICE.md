@@ -99,7 +99,7 @@ sudack-ai/
 
 ### `POST /simulate` — симулятор перехода на грейд
 
-Тот же вход, что у `/recommend` (плюс `as_of`). Жадный маршрут: на каждом шаге берём допустимое событие с максимальным взвешенным закрытием разрыва, применяем gain/max_level, ставим на первую свободную дату из `upcoming_sessions` (после шага, давшего prerequisites; self_paced — сразу; recurring может повторяться). Выход: `steps` с датами, часами и изменениями навыков, `readiness_path`, `total_hours`, `estimated_completion`, `coverage` (сколько уровней разрыва закрывает каталог), `remaining_gaps` и `blocked` с причиной, на которую HR может повлиять: `no_event_for_skill` | `audience` | `ceiling` | `prerequisites` | `unscheduled`. На ките ни один сотрудник не достигает грейда полностью — это свойство каталога из 40 событий, и это само по себе HR-инсайт.
+Тот же вход, что у `/recommend` (плюс `as_of`). Жадный маршрут: на каждом шаге берём допустимое событие с максимальным взвешенным закрытием разрыва, применяем gain/max_level, ставим на первую свободную дату из `upcoming_sessions` (после шага, давшего prerequisites; self_paced — сразу; recurring может повторяться). Выход: `steps` с датами, часами и изменениями навыков, `readiness_path`, `total_hours`, `estimated_completion`, `coverage` (сколько уровней разрыва закрывает каталог), `remaining_gaps` и `blocked` с причиной, на которую HR может повлиять: `no_event_for_skill` | `audience` | `ceiling` | `prerequisites` | `already_completed` | `step_limit` | `unscheduled`. На ките ни один сотрудник не достигает грейда полностью — это свойство каталога из 40 событий, и это само по себе HR-инсайт.
 
 ### `POST /events/impact` — конструктор события с прогнозом эффекта
 
