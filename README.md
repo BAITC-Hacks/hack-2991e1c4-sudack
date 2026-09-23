@@ -19,7 +19,7 @@ The core of the solution is the quality and explainability of the recommendation
 | Service | Directory | Responsibility | Docs |
 | --- | --- | --- | --- |
 | Frontend | `frontend/` | Employee screen (profile, trajectory, recommendations with "how it was calculated", complete button), HR screen (weak skills, no-step list, participation, import), role login | `frontend/README.md`, `frontend/FRONTEND.md` |
-| Go API | `backend/` | Data import in the kit format, employee/HR access control, eligible-event selection, progress transactions, HR aggregates. Calls the AI service with the full context of one employee | `backend/BACKEND.md` |
+| Go API | `backend/` | Kit import on first start and HR upload of extra profiles, role tokens with a demo login, employee/HR access control, eligible-event checks, idempotent progress transactions, HR aggregates. Calls the AI service with the full context of one employee | `backend/BACKEND.md`, `backend/README.md` |
 | AI service | `sudack-ai/` | Deterministic scoring, LLM selection and explanation with validation, template fallback, grade roadmap simulator, dropout risk, draft-event impact | `sudack-ai/README.md`, `sudack-ai/docs/api.md`, `sudack-ai/docs/AI_SERVICE.md` |
 
 The AI service holds no data and no rights logic: Go sends the employee, the target grade profile, the event catalog and that employee's history in every request. Names are never sent to the model.
@@ -37,13 +37,14 @@ docker compose up --build
 | --- | --- |
 | http://localhost:3000 | Frontend |
 | http://localhost:8080/healthz | Go API health |
+| http://localhost:8080/api/v1/auth/demo-token | Demo login (POST role + employee_id) |
 | http://localhost:8001/docs | AI service OpenAPI |
 
 Without an API key the system still works end to end: explanations come from the multilingual template and are labeled `template`. With a key, `LLM_MODEL` defaults to `gpt-4o`, which passed our live audits in Russian, Kazakh and English.
 
 **Interchangeable LLM providers.** The AI service talks to every provider through the OpenAI chat-completions protocol, so a provider is a base URL, a key and a model name. `LLM_PROVIDERS` (default `openai,nvidia`) sets the failover order; `GET /providers` on the AI service shows the active chain; every recommendation names the engine that answered in `llm_provider` and `llm_model`. The chain runs against one deadline (`LLM_TIMEOUT`): a provider that fails fast hands the remaining time to the next one, and no provider except the last may use more than 75% of what is left. Verified live: with `LLM_PROVIDERS=nvidia,openai` the NVIDIA call fails, OpenAI answers, and the response reports `llm_provider: openai`. The hackathon NVIDIA key currently lists models but returns 401 on inference, so NVIDIA acts as a configured standby until the key is activated; details in `sudack-ai/docs/VERDICT_AUDIT.md`.
 
-`FRONTEND_USE_MOCKS` in `.env` controls whether the frontend talks to the Go API (`false`) or runs on the bundled synthetic dataset (`true`, the default while the Go endpoints are being completed). In the bundled-data mode the browser calls the AI service directly at `FRONTEND_AI_URL` for live LLM explanations, the "why not X" block, the grade roadmap, dropout risk and the draft-event constructor, so the AI layer is demonstrable without the Go API; if the AI service is down the screens fall back to the local calculation and say so. Employee names never leave the browser in that mode. **This direct browser-to-AI path is a demo stopgap only:** the target architecture is frontend → Go API → AI service, with Go owning data, access control and the AI call. Once the Go endpoints land, the frontend switches to `FRONTEND_USE_MOCKS=false` and `FRONTEND_AI_URL` is dropped. See "Status" below.
+`FRONTEND_USE_MOCKS` in `.env` controls whether the frontend talks to the Go API (`false`, the default) or runs on the bundled synthetic dataset (`true`, a demo fallback). In the bundled-data mode the browser calls the AI service directly at `FRONTEND_AI_URL` for live LLM explanations, the "why not X" block, the grade roadmap, dropout risk and the draft-event constructor, so the AI layer is demonstrable without the Go API; if the AI service is down the screens fall back to the local calculation and say so. Employee names never leave the browser in that mode. **This direct browser-to-AI path is a demo stopgap only:** the target architecture is frontend → Go API → AI service, with Go owning data, access control and the AI call. Once the Go endpoints land, the frontend switches to `FRONTEND_USE_MOCKS=false` and `FRONTEND_AI_URL` is dropped. See "Status" below.
 
 ### Running services separately
 
@@ -51,14 +52,14 @@ Without an API key the system still works end to end: explanations come from the
 # AI service
 cd sudack-ai && uv sync && uv run uvicorn main:app --port 8001      # tests: uv run pytest
 # Go API
-cd backend && go run ./cmd                                          # PORT defaults to 8080
+cd backend && go run ./cmd/migrate -data ../sudack-ai/docs/data && go run ./cmd   # PORT 8080; tests: go test ./...
 # Frontend
 cd frontend && npm install && npm run dev                           # NEXT_PUBLIC_API_URL, NEXT_PUBLIC_USE_MOCKS
 ```
 
 ## Demo scenario
 
-1. **Import the starter kit** as HR: `employees.json`, `events.json`, `skills.json`, `activity_history.csv`. The same screen accepts additional profiles and history in the same format, which is how the jury's check profiles are loaded. Ready-made trap profiles with expected answers are in `docs/jury-profiles/`.
+1. **Log in.** The login screen issues a role token from the Go API: pick "I am an employee" and an employee, or "I am HR". The starter kit is imported into SQLite on first start. As HR, use **Import** to upload additional `employees.json` and `activity_history.csv` in the same format, which is how the jury's check profiles are loaded; ready-made trap profiles with expected answers are in `docs/jury-profiles/`, and uploaded employees appear in the login search immediately.
 2. **Open an employee** (for example `E0028`). The profile shows role, grade, tenure, skills against the next-grade requirements, readiness, completed activities and missed ones.
 3. **Read the recommendations.** One to three activities, each with a reason in the employee's language and an expandable "how it was calculated" block: the next-grade requirement, the skill gap with exact levels, participation history on these skills, the real gain the activity gives, and the score formula. A "why not X" block explains why the skill with the largest gap is not first when history or criticality says otherwise.
 4. **Mark an activity as done.** Skill levels rise by the event's `gain` up to its `max_level`, readiness and the recommendation list update, and the completion is recorded once (idempotent).
@@ -109,7 +110,22 @@ sudack-ai/                FastAPI AI service, tests, dataset copy, API docs
 
 ```bash
 cd sudack-ai && uv run pytest         # 70 tests: trap profiles, contract, dataset run over 200 employees, LLM validation
+cd backend && go test ./...           # 5 integration tests on the starter kit with a fake AI (no Go installed? see below)
 cd frontend && npm run lint && npm run build
+```
+
+Without a local Go toolchain the backend tests run in a container from the repository root:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work/backend golang:1.26.1-bookworm go test ./...
+```
+
+End-to-end through the Go API (demo login, profile, recommendations, roadmap, HR overview, jury import, idempotent completion, role checks) was verified against `docker compose up` on 2026-09-23; with `OPENAI_API_KEY` in `.env` recommendations return `source: llm` in 3–5 s.
+
+Good employees to click through: `E0028` (Middle Backend, Kazakh UI language), `E0002` (Middle Backend, Russian, five-step roadmap), `E0008` (Senior Frontend, English), `E0025` (Junior Data Analyst, Kazakh), and the trap profiles `E0901`–`E0903` after import.
+
+```bash
+# (end of verification commands)
 ```
 
 A live one-call audit of the LLM layer for any kit employee: `cd sudack-ai && uv run python scripts/audit_verdict.py --live E0002`.
@@ -117,5 +133,5 @@ A live one-call audit of the LLM layer for any kit employee: `cd sudack-ai && uv
 ## Status
 
 - AI service: complete and tested, including live LLM audits.
-- Frontend: complete on the bundled dataset; wired to the Go API contract in `backend/BACKEND.md`, switch with `FRONTEND_USE_MOCKS=false`.
-- Go API: schema, queries and health endpoint are in place; import, employee, recommendation, completion and HR endpoints are being implemented against `backend/BACKEND.md` and `sudack-ai/docs/api.md`.
+- Frontend: complete; talks to the Go API by default (`FRONTEND_USE_MOCKS=false`), with a bundled-data demo mode as a fallback.
+- Go API: import of the kit on first start, HR upload of extra profiles and history, profile, recommendations, roadmap, preview, idempotent completion, HR overview with dropout risk, draft-event impact, role tokens with a demo login. Integration tests run against the starter kit with a fake AI.
