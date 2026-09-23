@@ -9,7 +9,7 @@ from app.models import (
     BatchRequest, BatchResponse, BatchResult, BatchTopItem, Calculation,
     Readiness, RecommendRequest, RecommendResponse, Recommendation,
 )
-from app.scoring import Candidate, ScoringService, readiness
+from app.scoring import Candidate, ScoringService, readiness, skill_gaps
 
 
 class RecommendationService:
@@ -80,26 +80,38 @@ class RecommendationService:
         if selected:
             for skill, (_, new) in selected[0][0].gains.items():
                 after_skills[skill] = new
+        requirements, critical = request.next_grade_requirements, request.critical_skills
         result = RecommendResponse(
             recommendations=recommendations,
             readiness=Readiness(
-                current=readiness(request.employee.skills, request.next_grade_requirements),
-                after_top=readiness(after_skills, request.next_grade_requirements),
+                current=readiness(request.employee.skills, requirements, critical),
+                after_top=readiness(after_skills, requirements, critical),
             ),
             source=source,
         )
-        self._cache.set(key, result)
+        # A template answer produced because the LLM was unavailable must not be
+        # pinned until the employee's history changes; only validated LLM output is cached.
+        if source == "llm":
+            self._cache.set(key, result)
         return result
 
     def score_batch(self, request: BatchRequest) -> BatchResponse:
         results = []
         for item in request.items:
             ranked = self._scoring.rank(item)
+            gaps = skill_gaps(item.employee.skills, item.next_grade_requirements)
             results.append(BatchResult(
                 employee_id=item.employee.employee_id,
-                top=[BatchTopItem(event_id=candidate.event.event_id, score=round(candidate.score, 4))
-                     for candidate in ranked[:3]],
-                readiness=readiness(item.employee.skills, item.next_grade_requirements),
+                top=[
+                    BatchTopItem(
+                        event_id=candidate.event.event_id,
+                        score=round(candidate.score, 4),
+                        primary_skill=candidate.primary_skill,
+                    )
+                    for candidate in ranked[:3]
+                ],
+                readiness=readiness(item.employee.skills, item.next_grade_requirements, item.critical_skills),
+                gaps={skill: gap for skill, gap in gaps.items() if gap > 0},
             ))
         return BatchResponse(results=results)
 
@@ -107,22 +119,28 @@ class RecommendationService:
     def _validate_selection(
         proposed: list[dict[str, str]], candidates: list[Candidate], request: RecommendRequest
     ) -> list[tuple[Candidate, str]] | None:
-        if not isinstance(proposed, list) or not 1 <= len(proposed) <= 3:
+        """Keep the LLM items that are grounded in the candidate facts; drop the rest.
+
+        Returns None (fallback) when nothing usable remains or the shape is wrong.
+        """
+        if not isinstance(proposed, list) or not proposed:
             return None
         by_id = {candidate.event.event_id: candidate for candidate in candidates}
         selected = []
         seen = set()
         for item in proposed:
             if not isinstance(item, dict):
-                return None
+                continue
             event_id, reason = item.get("event_id"), item.get("reason")
             if event_id not in by_id or event_id in seen or not isinstance(reason, str) or not reason.strip():
-                return None
+                continue
             if not RecommendationService._reason_is_grounded(reason, by_id[event_id], request):
-                return None
+                continue
             seen.add(event_id)
             selected.append((by_id[event_id], reason.strip()))
-        return selected
+            if len(selected) == 3:
+                break
+        return selected or None
 
     @staticmethod
     def _reason_is_grounded(reason: str, candidate: Candidate, request: RecommendRequest) -> bool:
@@ -135,17 +153,17 @@ class RecommendationService:
             return False
 
         history_terms = {
-            "ru": r"истор|похож|аналогич|мероприят|активност|заверш|пропуст|участ",
-            "kk": r"тарих|ұқсас|аяқтал|қатыс|өткіз|шара",
-            "en": r"histor|similar|complet|attend|miss|participat|activit",
+            "ru": r"истор|похож|аналогич|мероприят|активност|заверш|пропуст|участ|раньше|ещё не|еще не",
+            "kk": r"тарих|ұқсас|аяқтал|қатыс|өткіз|шара|әлі",
+            "en": r"histor|similar|complet|attend|miss|participat|activit|yet",
         }
         if not re.search(history_terms[request.lang], reason, re.IGNORECASE):
             return False
 
+        # The skill levels are the facts the LLM must not blur; history counts are
+        # allowed in words ("no similar activities yet"), so they are not required.
         gap = next(factor for factor in candidate.factors if factor["type"] == "skill_gap")
-        history = next(factor for factor in candidate.factors if factor["type"] == "history")
         gain = next(factor for factor in candidate.factors if factor["type"] == "effective_gain")
-        numbers = [gap["current"], gap["required"], gain["to"],
-                   history["completed"], history["total"]]
+        numbers = [gap["current"], gap["required"], gain["to"]]
         return all(number is None or re.search(rf"(?<!\d){number}(?!\d)", reason)
                    for number in numbers)

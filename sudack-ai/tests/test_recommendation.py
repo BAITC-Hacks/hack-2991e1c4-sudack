@@ -276,3 +276,168 @@ def test_malformed_starter_kit_event_returns_validation_error() -> None:
     with TestClient(create_app()) as client:
         response = client.post("/recommend", json=data)
     assert response.status_code == 422
+
+
+# --- Review fixes -----------------------------------------------------------
+
+
+def test_critical_skill_gap_outranks_equal_noncritical_gap() -> None:
+    data = payload()
+    data["employee"]["skills"] = {"SK_SYSTEM_DESIGN": 2, "SK_CLOUD": 2}
+    data["next_grade_requirements"] = {"SK_SYSTEM_DESIGN": 4, "SK_CLOUD": 4}
+    data["critical_skills"] = ["SK_SYSTEM_DESIGN"]
+    data["events"] = [
+        # Sorted first by event_id on a tie, so the test only passes if critical weight wins.
+        {"event_id": "EV_A_CLOUD", "title": "Cloud", "type": "course",
+         "skills": {"SK_CLOUD": {"gain": 1, "max_level": 4}}},
+        {"event_id": "EV_B_DESIGN", "title": "Design", "type": "course",
+         "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}},
+    ]
+    result = recommend(data)
+    assert result["recommendations"][0]["event_id"] == "EV_B_DESIGN"
+    gain = next(f for f in result["recommendations"][0]["factors"] if f["type"] == "effective_gain")
+    assert gain["weight"] > 1.5
+
+
+def test_missed_history_of_another_skill_penalizes_unrelated_event_only_weakly() -> None:
+    data = payload()
+    data["history"] = [{"event_id": "EV_SPEAK", "status": "no_show"} for _ in range(3)]
+    result = recommend(data)
+    by_id = {item["event_id"]: item for item in result["recommendations"]}
+    design_history = next(f for f in by_id["EV_DESIGN"]["factors"] if f["type"] == "history")
+    assert design_history["total"] == 0, "public speaking misses are not System Design history"
+    assert design_history["same_type_total"] == 3
+    design_engagement = by_id["EV_DESIGN"]["calculation"]["engagement"]
+    speak = ScoringService().rank(RecommendRequest.model_validate(data))
+    speak_engagement = next(c.engagement for c in speak if c.event.event_id == "EV_SPEAK")
+    assert speak_engagement < design_engagement < 0.5
+
+
+def test_in_progress_event_is_not_recommended_again() -> None:
+    data = payload()
+    data["history"] = [{"event_id": "EV_DESIGN", "status": "in_progress"}]
+    result = recommend(data)
+    assert all(item["event_id"] != "EV_DESIGN" for item in result["recommendations"])
+
+
+def test_in_progress_history_does_not_lower_related_event_engagement() -> None:
+    data = payload()
+    data["history"] = [{"event_id": "EV_DESIGN", "status": "in_progress"}]
+    data["events"].append({"event_id": "EV_DESIGN2", "title": "Design 2", "type": "workshop",
+                           "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}})
+    ranked = ScoringService().rank(RecommendRequest.model_validate(data))
+    related = next(candidate for candidate in ranked if candidate.event.event_id == "EV_DESIGN2")
+    assert related.engagement == 0.5
+    history = next(factor for factor in related.factors if factor["type"] == "history")
+    assert history["total"] == 0
+
+
+def test_overdue_counts_as_missed_history() -> None:
+    data = payload()
+    data["history"] = [{"event_id": "EV_DESIGN", "status": "overdue"}]
+    data["events"].append({"event_id": "EV_DESIGN2", "title": "Design 2", "type": "workshop",
+                           "skills": {"SK_SYSTEM_DESIGN": {"gain": 1, "max_level": 4}}})
+    result = recommend(data)
+    history = next(f for f in result["recommendations"][0]["factors"] if f["type"] == "history")
+    assert history["missed"] == 1
+
+
+def test_recent_miss_weighs_more_than_old_miss() -> None:
+    def engagement_with(dates: list[str]) -> float:
+        data = payload()
+        data["history"] = [{"event_id": "EV_DESIGN", "status": "completed", "date": "2026-09-01"}] + [
+            {"event_id": "EV_DESIGN", "status": "no_show", "date": date} for date in dates
+        ]
+        data["events"][0]["recurring"] = True
+        ranked = ScoringService().rank(RecommendRequest.model_validate(data))
+        return next(c.engagement for c in ranked if c.event.event_id == "EV_DESIGN")
+
+    assert engagement_with(["2024-10-15"]) > engagement_with(["2026-08-15"])
+
+
+def test_fallback_result_is_not_cached() -> None:
+    class FlakyExplainer:
+        calls = 0
+
+        async def select(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("provider down")
+            return [{"event_id": "EV_DESIGN", "reason": (
+                "For Senior, System Design is 2 against 4 and this raises it to 3. "
+                "You have no similar activity history (0 of 0)."
+            )}]
+
+    data = payload()
+    data["lang"] = "en"
+    service = RecommendationService(explainer=FlakyExplainer())
+    request = RecommendRequest.model_validate(data)
+    assert asyncio.run(service.recommend(request)).source == "fallback"
+    assert asyncio.run(service.recommend(request)).source == "llm"
+
+
+def test_invalid_llm_item_is_dropped_but_valid_items_kept() -> None:
+    class MixedExplainer:
+        async def select(self, *_args, **_kwargs):
+            return [
+                {"event_id": "EV_DESIGN", "reason": (
+                    "For Senior, System Design is 2 against 4 and this raises it to 3. "
+                    "You completed 0 of 0 similar activities."
+                )},
+                {"event_id": "NOT_A_CANDIDATE", "reason": "invented"},
+            ]
+
+    data = payload()
+    data["lang"] = "en"
+    result = asyncio.run(RecommendationService(explainer=MixedExplainer()).recommend(
+        RecommendRequest.model_validate(data)
+    ))
+    assert result.source == "llm"
+    assert [item.event_id for item in result.recommendations] == ["EV_DESIGN"]
+
+
+def test_reason_with_levels_but_without_history_counts_is_accepted() -> None:
+    class LevelsOnlyExplainer:
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": (
+                "For Senior you need System Design 4 and you are at 2; this workshop raises it to 3. "
+                "You have not attended similar activities yet."
+            )}]
+
+    data = payload()
+    data["lang"] = "en"
+    result = asyncio.run(RecommendationService(explainer=LevelsOnlyExplainer()).recommend(
+        RecommendRequest.model_validate(data)
+    ))
+    assert result.source == "llm"
+
+
+def test_batch_returns_primary_skill_and_gaps() -> None:
+    with TestClient(create_app()) as client:
+        response = client.post("/score/batch", json={"items": [payload()]})
+    result = response.json()["results"][0]
+    assert result["top"][0]["primary_skill"] == "SK_SYSTEM_DESIGN"
+    assert result["gaps"] == {"SK_SYSTEM_DESIGN": 2}
+
+
+def test_failover_gives_second_provider_its_own_time_budget() -> None:
+    from app.explain import FailoverExplanationStrategy
+
+    class Hanging:
+        async def select(self, *_args, **_kwargs):
+            await asyncio.sleep(5)
+
+    class Quick:
+        async def select(self, *_args, **_kwargs):
+            return [{"event_id": "EV_DESIGN", "reason": "ok"}]
+
+    strategy = FailoverExplanationStrategy([Hanging(), Quick()], attempt_timeout=0.05)
+    request = RecommendRequest.model_validate(payload())
+    candidates = ScoringService().rank(request)[:5]
+    assert asyncio.run(strategy.select(request, candidates)) == [{"event_id": "EV_DESIGN", "reason": "ok"}]
+
+
+def test_legacy_generate_endpoint_is_removed() -> None:
+    with TestClient(create_app()) as client:
+        response = client.post("/v1/generate", json={"prompt": "hi"})
+    assert response.status_code == 404

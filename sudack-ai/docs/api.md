@@ -2,7 +2,7 @@
 
 Run the service from the repository root with `uv run uvicorn main:app --reload --port 8001`. The examples below use `http://127.0.0.1:8001`. FastAPI also serves an interactive OpenAPI page at `/docs` and the schema at `/openapi.json`.
 
-The API currently has no caller authentication; Go handles access control. Recommendations and batch scoring need no provider credentials. Recommendation responses use a template when configured LLM providers fail or time out. The legacy generic generation endpoint requires a configured upstream key. Put `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in the local `.env` file.
+The API currently has no caller authentication; Go handles access control. Recommendations and batch scoring need no provider credentials. Recommendation responses use a template when no LLM provider is configured or every configured provider fails, times out, or returns ungrounded text. Put `OPENAI_API_KEY` and/or `NVIDIA_API_KEY` in the local `.env` file to enable LLM explanations.
 
 ## `GET /health`
 
@@ -27,9 +27,9 @@ Scores development activities for one employee and returns up to three explanati
 | `employee` | object | Yes | `employee_id`, `role`, `grade`, and `skills` (`skill_id → level 0–5`); `tenure_months` and `preferred_language` are optional. Extra starter-kit employee fields are accepted. |
 | `next_grade` | string | Yes | Target grade label supplied by Go. |
 | `next_grade_requirements` | object | Yes | Target `skill_id → required level 0–5`. |
-| `critical_skills` | string array | No | IDs from the target role profile; defaults to `[]`. |
+| `critical_skills` | string array | No | IDs from the target role profile; defaults to `[]`. Gaps in these skills weigh 2.5 instead of 1.5 in scoring and readiness. |
 | `skills_meta` | object | No | `skill_id → {name, category?}`; defaults to `{}`. Used for readable explanations. |
-| `history` | object array | No | Entries need `event_id` and `status`; `date` is optional. Defaults to `[]`. |
+| `history` | object array | No | Entries need `event_id` and `status`; `date` (`YYYY-MM-DD` or `YYYY-MM`) is optional and enables recency weighting. Defaults to `[]`. |
 | `events` | object array | Yes | Full candidate and historical event catalog. See accepted event shapes below. |
 | `lang` | `ru`, `kk`, or `en` | No | Defaults to `employee.preferred_language` when present, otherwise `ru`. |
 
@@ -46,11 +46,13 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
 {
   "recommendations": [{
     "event_id": "EV07", "title": "System Design Workshop", "score": 0.9234,
-    "reason": "System Design is 2 against the 4 needed for Senior; this activity raises it to 3. You have no history of similar activities.",
+    "reason": "System Design is 2 against the 4 needed for Senior; this activity raises it to 3. You have no history of activities on these skills.",
     "factors": [
-      {"type": "grade_requirement", "text": "System Design is required for Senior"},
+      {"type": "grade_requirement", "text": "System Design is required for Senior", "critical": false},
       {"type": "skill_gap", "skill": "SK_SYSTEM_DESIGN", "current": 2, "required": 4},
-      {"type": "history", "text": "0 of 0 similar activities completed; 0 missed", "completed": 0, "total": 0, "missed": 0},
+      {"type": "history", "text": "0 of 0 activities on the same skills completed; 0 missed",
+       "completed": 0, "total": 0, "missed": 0,
+       "same_type_completed": 0, "same_type_total": 0, "same_type_missed": 0},
       {"type": "effective_gain", "skill": "SK_SYSTEM_DESIGN", "from": 2, "to": 3, "weight": 1.5, "weighted_gap_closed": 1.5}
     ],
     "calculation": {"gap_closed": 1.5, "engagement": 0.5, "formula": "1.5000 * 0.5000^0.7"}
@@ -60,7 +62,7 @@ Success: HTTP `200`, `application/json`. Example with the template fallback:
 }
 ```
 
-`source` is `llm` only when a validated LLM selection is returned; otherwise it is `fallback`. The service gives the LLM the top five deterministic candidates. It checks the 1–3 selected IDs, reason language, and key numeric facts, then falls back on invalid output or a timeout. The deterministic fallback returns up to three gap-closing events when any are eligible; otherwise it may offer broader development. The LLM attempt has an eight-second default budget across configured providers. `score` is a raw ranking value, not a probability. For events that develop several skills, factors include each skill's weighted contribution; these sum to `calculation.gap_closed`. `readiness.after_top` applies the first recommendation's gains only. Responses are cached per process using the full request context.
+`source` is `llm` only when at least one LLM item passed validation; otherwise it is `fallback`. The service gives the LLM the top five deterministic candidates. Each returned item must name a candidate ID, be written in the requested language, mention participation history, and contain the exact current, required, and resulting skill levels from the factors. Items that fail are dropped; the remaining items (at most three) are returned in the LLM's order. When nothing survives, or the LLM times out, the deterministic fallback returns up to three gap-closing events when any are eligible; otherwise it may offer broader development. The LLM attempt has an eight-second default budget, split equally between configured providers so a hanging first provider cannot starve the second. `score` is a raw ranking value, not a probability. For events that develop several skills, factors include each skill's weighted contribution; these sum to `calculation.gap_closed`. The `history` factor separates activities on the same skills (`completed`, `total`, `missed`) from same-type activities on other skills (`same_type_*`), which count with weight 0.3 in engagement. `in_progress` history is excluded from engagement until its outcome is known; `overdue` counts as missed. `readiness.after_top` applies the first recommendation's gains only. Only `llm` responses are cached per process, keyed by the full request context; a fallback answer is recomputed on the next call.
 
 Errors: HTTP `422` with FastAPI's validation `detail` array for malformed JSON, missing fields, invalid skill levels, or unsupported `lang`. No upstream failure status is returned by this endpoint because LLM failures use the fallback.
 
@@ -77,37 +79,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8001/score/batch -Method Post -ContentTy
 Success: HTTP `200`, `application/json`:
 
 ```json
-{"results":[{"employee_id":"E0028","top":[{"event_id":"EV07","score":0.9234}],"readiness":0.5}]}
+{"results":[{"employee_id":"E0028","top":[{"event_id":"EV07","score":0.9234,"primary_skill":"SK_SYSTEM_DESIGN"}],"readiness":0.5,"gaps":{"SK_SYSTEM_DESIGN":2}}]}
 ```
 
-`top` contains up to three event IDs and raw scores. It is empty when no event is eligible. `readiness` is the employee's current readiness for the supplied target requirements. Errors: HTTP `422` with FastAPI's validation `detail` array when `items` is missing or an item is invalid. The supplied 200-person starter kit completed in about 0.21 seconds in a local in-process HTTP benchmark; production timing depends on hardware and request size.
-
-## `POST /v1/generate`
-
-Legacy generic text generation from the selected AI provider. Send `Content-Type: application/json`. `DEFAULT_PROVIDER` chooses the provider when the request omits it; its default is `openai`.
-
-| JSON field | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `prompt` | string | Yes | Text sent as the user message. It must contain at least one non-whitespace character. |
-| `provider` | string or `null` | No | `openai` or `nvidia`. Omit it or send `null` to use `DEFAULT_PROVIDER`. |
-
-```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:8001/v1/generate -Method Post -ContentType 'application/json' -Body '{"prompt":"Write a short greeting","provider":"nvidia"}'
-```
-
-Success: HTTP `200`, `application/json`:
-
-```json
-{"provider":"nvidia","text":"Hello!"}
-```
-
-`provider` is the strategy that handled the request. `text` is the provider's generated reply; its wording varies on each call.
-
-| Status | Response example | When it occurs |
-| --- | --- | --- |
-| `400` | `{"detail":"Unknown provider 'other'"}` | `provider` is not registered. |
-| `422` | `{"detail":"Prompt must not be blank"}` | `prompt` contains only whitespace. Missing fields, wrong JSON types, or malformed JSON also return `422` with FastAPI's validation `detail` array. |
-| `502` | `{"detail":"AI provider request failed"}` | The selected provider is unavailable, returns an unsuccessful response, or returns an unusable reply. |
-| `503` | `{"detail":"Provider 'openai' is not configured"}` | The selected provider's API key or model is empty. |
-
-The service does not currently retry a failed upstream request. A `502` does not include the upstream response body or credentials.
+`top` contains up to three event IDs, raw scores, and the skill each event mainly develops, so an HR view can aggregate which skills are being recommended. It is empty when no event is eligible, which is how the HR view finds employees without a recommended step. `readiness` is the employee's current readiness for the supplied target requirements. `gaps` maps each required skill that is below the target level to the number of missing levels; skills already at or above the requirement are omitted. HR aggregates these to see which skills sag most often. Errors: HTTP `422` with FastAPI's validation `detail` array when `items` is missing or an item is invalid. The supplied 200-person starter kit completed in about 0.21 seconds in a local in-process HTTP benchmark; production timing depends on hardware and request size.

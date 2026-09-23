@@ -1,5 +1,6 @@
 """Provider strategies and deterministic multilingual explanation fallback."""
 
+import asyncio
 import json
 from typing import Any, Protocol
 
@@ -50,10 +51,12 @@ class SDKExplanationStrategy:
                 {"role": "system", "content": (
                     "You are a career navigator. Return JSON with 1 to 3 recommendations. "
                     "Select only candidate event IDs. Use only facts provided in factors; never invent figures. "
-                    "In each reason state the exact current and required skill levels, the exact level after "
-                    "the activity, and the exact completed/total similar activity counts from factors. "
+                    "In each reason state the exact current and required skill levels and the exact level after "
+                    "the activity. Describe participation history from the history factor: activities on the "
+                    "same skills (completed/total/missed) matter most; same-type activities on other skills are "
+                    "weaker evidence. Say when a skill is critical for the next grade. "
                     "Explain the next-grade requirement, skill gap, participation history, and real gain. "
-                    "Mention missed similar activities tactfully. Write 2-3 short sentences, addressing "
+                    "Mention missed activities tactfully and never blame. Write 2-3 short sentences, addressing "
                     f"the employee respectfully. {language_instruction} Do not compare employees."
                 )},
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -74,13 +77,19 @@ class SDKExplanationStrategy:
 
 
 class FailoverExplanationStrategy:
-    def __init__(self, strategies: list[ExplanationStrategy]) -> None:
+    """Try providers in order; each attempt gets its own slice of the time budget
+    so a hanging first provider cannot starve the second one."""
+
+    def __init__(self, strategies: list[ExplanationStrategy], attempt_timeout: float | None = None) -> None:
         self._strategies = strategies
+        self._attempt_timeout = attempt_timeout
 
     async def select(self, request: RecommendRequest, candidates: list[Candidate]) -> list[dict[str, str]]:
         for strategy in self._strategies:
             try:
-                return await strategy.select(request, candidates)
+                return await asyncio.wait_for(
+                    strategy.select(request, candidates), timeout=self._attempt_timeout
+                )
             except Exception:
                 continue
         raise RuntimeError("No LLM provider returned a usable response")
@@ -93,6 +102,8 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
     required = request.next_grade_requirements.get(primary)
     history = next(factor for factor in candidate.factors if factor["type"] == "history")
     total, completed, missed = history["total"], history["completed"], history["missed"]
+    type_total, type_completed = history["same_type_total"], history["same_type_completed"]
+    critical = primary in request.critical_skills and required is not None
     other_gains = []
     for skill, (old, improved) in candidate.gains.items():
         if skill == primary:
@@ -105,10 +116,13 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
         if required is None:
             first = f"{name} дағдысы {current} деңгейінен {new} деңгейіне өседі."
         else:
-            first = (f"{request.next_grade} деңгейі үшін {name} дағдысы {required} болуы керек; "
+            first = (f"{request.next_grade} деңгейі үшін {name} дағдысы {required} болуы керек"
+                     f"{' (бұл дағды грейд үшін шешуші)' if critical else ''}; "
                      f"қазір {current}, ал бұл шарадан кейін {new} болады.")
-        second = (f"Ұқсас {total} шараның {completed} аяқталды, {missed} өткізіліп алынды."
-                  if total else "Ұқсас шараларға қатысу тарихы жоқ.")
+        second = (f"Осы дағдылар бойынша {total} шараның {completed} аяқталды, {missed} өткізіліп алынды."
+                  if total else "Осы дағдылар бойынша қатысу тарихы жоқ.")
+        if type_total:
+            second += f" Осындай форматтағы басқа {type_total} шараның {type_completed} аяқталды."
         extra = ("Қосымша өсім: " + ", ".join(
             f"{name} {old}→{improved}" + (f" (қажет {needed})" if needed is not None else "")
             for name, old, improved, needed in other_gains
@@ -117,10 +131,13 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
         if required is None:
             first = f"{name} will improve from {current} to {new}."
         else:
-            first = (f"{name} is {current} against the {required} needed for {request.next_grade}; "
+            first = (f"{name} is {current} against the {required} needed for {request.next_grade}"
+                     f"{' and is critical for that grade' if critical else ''}; "
                      f"this activity raises it to {new}.")
-        second = (f"You completed {completed} of {total} similar activities and missed {missed}."
-                  if total else "You have no history of similar activities.")
+        second = (f"You completed {completed} of {total} activities on these skills and missed {missed}."
+                  if total else "You have no history of activities on these skills.")
+        if type_total:
+            second += f" You completed {type_completed} of {type_total} other activities of the same format."
         extra = ("Other gains: " + ", ".join(
             f"{name} {old}→{improved}" + (f" (required {needed})" if needed is not None else "")
             for name, old, improved, needed in other_gains
@@ -129,10 +146,13 @@ def template_explain(request: RecommendRequest, candidate: Candidate) -> str:
         if required is None:
             first = f"Навык {name} вырастет с {current} до {new}."
         else:
-            first = (f"Для {request.next_grade} нужен уровень {required} по навыку {name}; "
+            first = (f"Для {request.next_grade} нужен уровень {required} по навыку {name}"
+                     f"{' (критичный навык для грейда)' if critical else ''}; "
                      f"сейчас {current}, после активности будет {new}.")
-        second = (f"Вы завершили {completed} из {total} похожих активностей и пропустили {missed}."
-                  if total else "У вас пока нет истории похожих активностей.")
+        second = (f"Вы завершили {completed} из {total} активностей по этим навыкам и пропустили {missed}."
+                  if total else "У вас пока нет истории активностей по этим навыкам.")
+        if type_total:
+            second += f" Из других активностей того же формата вы завершили {type_completed} из {type_total}."
         extra = ("Другие улучшения: " + ", ".join(
             f"{name} {old}→{improved}" + (f" (требуется {needed})" if needed is not None else "")
             for name, old, improved, needed in other_gains

@@ -18,19 +18,23 @@
 ## Структура
 
 ```
-ai-service/
+sudack-ai/
+  main.py                 # точка входа uvicorn: app = create_app()
   app/
-    main.py          # FastAPI, роуты
-    models.py        # Pydantic-схемы (из /contracts)
-    scoring.py       # вся математика
-    explain.py       # LLM + шаблонный фолбэк
-    cache.py         # dict-кэш по хэшу
-    config.py        # env: OPENAI_API_KEY, LLM_MODEL, LLM_TIMEOUT=8
-  tests/
-    test_trap_profiles.py
-  Dockerfile
-  requirements.txt
+    api.py                # FastAPI, роуты, сборка провайдеров
+    models.py             # Pydantic-схемы; принимает и компактный, и starter-kit формат событий
+    scoring.py            # вся математика (веса, похожесть, engagement, readiness)
+    recommendation.py     # оркестрация: скоринг → LLM → валидация → фолбэк → кэш; batch
+    explain.py            # LLM-стратегии (OpenAI SDK, failover) + шаблонный фолбэк ru/kk/en
+    cache.py              # LRU-кэш по хэшу запроса (только llm-ответы)
+    config.py             # env: OPENAI_API_KEY, NVIDIA_API_KEY, LLM_MODEL, LLM_TIMEOUT=8
+  scripts/audit_verdict.py  # один живой вызов LLM для проверки verdict
+  tests/                  # трап-профили, контракт, датасет на 200 сотрудников
+  docs/api.md             # HTTP-контракт (обязателен к обновлению, см. AGENTS.md)
+  Dockerfile, pyproject.toml, uv.lock
 ```
+
+Запуск: `uv sync && uv run uvicorn main:app --port 8001`, тесты: `uv run pytest`.
 
 ## Эндпоинты
 
@@ -89,8 +93,9 @@ ai-service/
 ### `POST /score/batch`
 
 - Вход: `{"items": [<тот же объект, что в /recommend, без lang>]}`.
-- Выход: `{"results": [{"employee_id": "E0028", "top": [{"event_id": "EV07", "score": 0.82}], "readiness": 0.61}]}`.
-- **Без LLM.** Должен укладываться примерно в 1 с на 200 сотрудников.
+- Выход: `{"results": [{"employee_id": "E0028", "top": [{"event_id": "EV07", "score": 0.82, "primary_skill": "SK_SYSTEM_DESIGN"}], "readiness": 0.61, "gaps": {"SK_SYSTEM_DESIGN": 2}}]}`.
+- `gaps` — только навыки ниже требования (для HR-среза «какие навыки проседают»); пустой `top` — «нет рекомендованного шага».
+- **Без LLM.** На 200 сотрудников стартового кита ~0.2 с.
 
 ### `GET /health`
 
@@ -102,9 +107,10 @@ ai-service/
 def skill_gaps(skills, reqs) -> dict:
     return {s: max(0, req - skills.get(s, 0)) for s, req in reqs.items()}
 
-def skill_weight(skill, reqs, skills_meta) -> float:
-    if skill in reqs:   return 1.5    # нужен для следующего грейда
-    return 0.3                         # прочие (можно 1.0 для навыков роли, если есть в данных)
+def skill_weight(skill, reqs, critical) -> float:
+    if skill in critical and skill in reqs: return 2.5   # critical_skills целевого грейда
+    if skill in reqs:   return 1.5                        # прочие требования следующего грейда
+    return 0.3                                            # рост вне требований
 
 def effective_gain(event, skills) -> dict:
     out = {}
@@ -116,14 +122,24 @@ def effective_gain(event, skills) -> dict:
     return out
 
 def eligible_events(employee, events, history) -> list:
-    done = {h.event_id for h in history if h.status == "completed"}
-    # аудитория по роли/грейду; уже пройденные исключаем; нулевой effective_gain исключаем
+    done   = {h.event_id for h in history if h.status == "completed"}
+    active = {h.event_id for h in history if h.status in {"in_progress", "overdue"}}
+    # исключаем: mandatory; active; done (кроме recurring, EV_036); не та роль/грейд;
+    # невыполненные prerequisites; нулевой effective_gain
 
-def engagement(history, event, events_by_id) -> float:
-    similar = [h for h in history if is_similar(events_by_id[h.event_id], event)]
-    # is_similar: тот же type ИЛИ пересечение по навыкам
-    completed = sum(h.status == "completed" for h in similar)
-    return (completed + 1) / (len(similar) + 2)          # Лаплас: без истории → 0.5
+def engagement(history, event, events_by_id, latest_date) -> float:
+    # похожесть по НАВЫКАМ — основной сигнал; тот же type без общих навыков — слабый (×0.3);
+    # записи старше года от последней даты истории — ×0.6 (без даты — вес 1.0)
+    w = done = 0.0
+    for h in history:
+        if h.status == "in_progress": continue  # исход ещё неизвестен
+        past = events_by_id[h.event_id]
+        tier = 1.0 if past.skills & event.skills else 0.3 if past.type == event.type else None
+        if tier is None: continue
+        weight = tier * (1.0 if recent(h.date, latest_date) else 0.6)
+        w += weight; done += weight * (h.status == "completed")
+    return (done + 1) / (w + 2)                            # Лаплас: без истории → 0.5
+    # Пропуски = no_show, declined, dropped, overdue (skipped принимается для совместимости)
 
 def score_event(event, ctx) -> tuple[float, list, dict]:
     gains = effective_gain(event, ctx.skills)
@@ -134,11 +150,13 @@ def score_event(event, ctx) -> tuple[float, list, dict]:
     # factors собираем здесь же — LLM получает готовые факты
     return score, factors, calculation
 
-def readiness(skills, reqs) -> float:
-    total = sum(1.5 * r for r in reqs.values())
-    missing = sum(1.5 * g for g in skill_gaps(skills, reqs).values())
+def readiness(skills, reqs, critical) -> float:
+    total = sum(skill_weight(s, reqs, critical) * r for s, r in reqs.items())
+    missing = sum(skill_weight(s, reqs, critical) * g for s, g in skill_gaps(skills, reqs).items())
     return round(1 - missing / total, 2) if total else 1.0
 ```
+
+Почему так: у жюри профиль, где самый низкий навык (Public Speaking) трижды пропущен, а для грейда критичен System Design. Вес 2.5 на critical выводит System Design вперёд даже при равных разрывах, а похожесть по навыкам не «размазывает» пропуски Public Speaking на все воркшопы — history-фактор у System Design остаётся честным («0 из 0 по этим навыкам»).
 
 **Диверсификация топа:** после сортировки не берём два события на один и тот же навык подряд (мягкий штраф ×0.8 за повтор навыка). Отдаём в LLM топ-5.
 
@@ -146,8 +164,8 @@ def readiness(skills, reqs) -> float:
 
 - Модель — самая сильная из доступных. Бюджет позволяет.
 - `temperature=0`, structured outputs (JSON-схема: `[{event_id, reason}]`, от 1 до 3 элементов).
-- Таймаут 8 с через `asyncio.wait_for`.
-- **Валидация:** каждый `event_id` должен входить в кандидатов, `reason` не пустой. Иначе фолбэк.
+- Таймаут 8 с через `asyncio.wait_for`; при двух провайдерах (OpenAI → NVIDIA) каждому достаётся половина бюджета, чтобы зависший первый не съел время второго.
+- **Валидация (по каждому элементу):** `event_id` из кандидатов, язык `reason` совпадает с `lang` (kk — по казахским буквам), упомянута история участия, в тексте есть точные числа текущего/требуемого/итогового уровня. Невалидные элементы отбрасываются, валидные остаются; если не осталось ни одного — фолбэк.
 
 ### Системный промпт (черновик)
 
@@ -172,7 +190,7 @@ def readiness(skills, reqs) -> float:
 
 ## Кэш
 
-Словарь `{sha1(json(employee, history, lang)): response}`. После «выполнено» у сотрудника меняется история, поэтому хэш сам по себе становится другим, и инвалидировать ничего не нужно.
+LRU на 512 записей `{sha1(json(полный запрос)): response}`. Кэшируются только ответы `source: "llm"` — фолбэк из-за временного сбоя провайдера не должен «залипать». После «выполнено» у сотрудника меняется история, поэтому хэш сам по себе становится другим, и инвалидировать ничего не нужно.
 
 ## Чеклист
 

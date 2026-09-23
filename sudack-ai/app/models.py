@@ -129,12 +129,14 @@ class BatchRequest(BaseModel):
 class BatchTopItem(BaseModel):
     event_id: str
     score: float
+    primary_skill: str
 
 
 class BatchResult(BaseModel):
     employee_id: str
     top: list[BatchTopItem]
     readiness: float
+    gaps: dict[str, int] = Field(default_factory=dict)
 
 
 class BatchResponse(BaseModel):
