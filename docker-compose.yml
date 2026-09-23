@@ -2,6 +2,7 @@
 #   cp .env.example .env   # add OPENAI_API_KEY for LLM explanations (optional)
 #   docker compose up --build
 # Frontend http://localhost:3000, Go API http://localhost:8080, AI service http://localhost:8001/docs
+# Data flow: browser -> Go API (SQLite, roles, progress) -> AI service (scoring, explanations).
 services:
   ai:
     build: ./sudack-ai
@@ -24,11 +25,18 @@ services:
     build: ./backend
     environment:
       PORT: "8080"
-      AI_SERVICE_URL: http://ai:8001
+      DB_PATH: /app/.local/db/test.db
+      DATA_DIR: /app/data
+      AI_URL: http://ai:8001
+      AUTH_SECRET: ${AUTH_SECRET:-careerquest-local-demo-secret}
+      DEMO_AUTH: ${DEMO_AUTH:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
       - "8080:8080"
     volumes:
-      - backend-db:/srv/.local/db
+      - backend-db:/app/.local/db
+      # The starter kit is imported into SQLite on first start; later uploads go through POST /api/v1/imports.
+      - ./sudack-ai/docs/data:/app/data:ro
     depends_on:
       ai:
         condition: service_healthy
@@ -39,8 +47,8 @@ services:
       args:
         # Next.js bakes NEXT_PUBLIC_* at build time. Browser calls go to the host-published Go port.
         NEXT_PUBLIC_API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
-        NEXT_PUBLIC_USE_MOCKS: ${FRONTEND_USE_MOCKS:-true}
-        # With mocks on, the browser calls the AI service directly for live explanations, roadmap, risk and impact.
+        NEXT_PUBLIC_USE_MOCKS: ${FRONTEND_USE_MOCKS:-false}
+        # Only for the bundled-data demo mode (FRONTEND_USE_MOCKS=true): direct AI calls from the browser.
         NEXT_PUBLIC_AI_URL: ${FRONTEND_AI_URL:-http://localhost:8001}
     ports:
       - "3000:3000"

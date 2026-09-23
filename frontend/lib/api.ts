@@ -1,51 +1,79 @@
 import * as mocks from "./mocks";
 import * as ai from "./ai";
-import type {Employee,Factor,Gap,History,Impact,ImpactDraft,ImportReport,Overview,Profile,RecResponse,Recommendation,RiskRow,Roadmap,WeakSkill} from "./types";
+import type {Employee,Gap,History,Impact,ImpactDraft,ImportReport,Overview,Profile,RecResponse,Recommendation,RiskRow,Roadmap,WeakSkill} from "./types";
 
 // Three modes:
-//   mocks + AI   NEXT_PUBLIC_USE_MOCKS=true and NEXT_PUBLIC_AI_URL set: local kit, live AI service (demo without Go)
+//   api          NEXT_PUBLIC_USE_MOCKS=false (default): Go API with role tokens. Production path:
+//                browser -> Go -> AI service.
+//   mocks + AI   NEXT_PUBLIC_USE_MOCKS=true and NEXT_PUBLIC_AI_URL set: local kit, live AI service (demo stopgap)
 //   mocks        NEXT_PUBLIC_USE_MOCKS=true, no AI URL: fully local, template explanations
-//   api          NEXT_PUBLIC_USE_MOCKS=false: Go API with bearer tokens (production path)
-export const useMocks=process.env.NEXT_PUBLIC_USE_MOCKS!=="false";
+export const useMocks=process.env.NEXT_PUBLIC_USE_MOCKS==="true";
 export const useAi=useMocks&&ai.aiConfigured;
-const base=process.env.NEXT_PUBLIC_API_URL||"http://localhost:8080";
+const base=(process.env.NEXT_PUBLIC_API_URL||"http://localhost:8080").replace(/\/$/,"");
 export type Session={role:"employee"|"hr";employee_id?:string;token?:string};
 const sessionKey="career-quest-session";
 export function getSession():Session|null {if(typeof window==="undefined")return null;try{return JSON.parse(sessionStorage.getItem(sessionKey)||"null")}catch{return null}}
 export function setSession(session:Session|null){if(session)sessionStorage.setItem(sessionKey,JSON.stringify(session));else sessionStorage.removeItem(sessionKey)}
-async function request<T>(path:string,options:RequestInit={}):Promise<T>{const token=getSession()?.token;const response=await fetch(`${base}${path}`,{...options,headers:{...(token?{Authorization:`Bearer ${token}`}:{ }),...options.headers},cache:"no-store"});if(!response.ok){let message=`Ошибка ${response.status}`;try{const body=await response.json();message=body.message||message}catch{}throw Object.assign(new Error(message),{status:response.status})}return response.json() as Promise<T>}
+async function request<T>(path:string,options:RequestInit={}):Promise<T>{
+  const token=getSession()?.token;
+  const response=await fetch(`${base}${path}`,{...options,headers:{...(token?{Authorization:`Bearer ${token}`}:{}),...options.headers},cache:"no-store"});
+  if(!response.ok){let message=`Ошибка ${response.status}`;try{const body=await response.json();message=body.message||body.detail||message}catch{}throw Object.assign(new Error(message),{status:response.status})}
+  return response.json() as Promise<T>;
+}
 const obj=(value:unknown):Record<string,unknown>=>value&&typeof value==="object"?value as Record<string,unknown>:{};
-const arr=(value:unknown):Record<string,unknown>[]=>Array.isArray(value)?value.map(obj):[];
 const num=(value:unknown)=>Number(value||0);
 
-export async function employees():Promise<Employee[]>{return mocks.allEmployees()}
+/** Demo login on the Go API (DEMO_AUTH=true): returns a signed role token for the chosen role and employee. */
+export async function demoLogin(role:"employee"|"hr",employeeId?:string):Promise<string>{
+  const body=await request<{access_token:string}>("/api/v1/auth/demo-token",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({role,employee_id:employeeId||""})});
+  return body.access_token;
+}
+
+/** Login picker. In API mode the list comes from the Go database (so uploaded jury profiles appear); the bundled kit is the fallback. */
+export async function employees():Promise<Employee[]>{
+  if(useMocks)return mocks.allEmployees();
+  try{
+    const raw=await request<{employees:Employee[]}>("/api/v1/auth/demo-employees");
+    return raw.employees.map(e=>({...e,tenure_months:num(e.tenure_months),skills:e.skills||{}}));
+  }catch{return mocks.allEmployees()}
+}
+
 export async function profile(id:string):Promise<Profile>{
   if(useMocks)return mocks.getProfile(id);
   const raw=obj(await request(`/api/v1/employees/${encodeURIComponent(id)}?lang=ru`));
-  const employee=obj(raw.employee||raw);
-  const skills=obj(employee.skills);
-  const gaps:Gap[]=arr(raw.gaps).map(g=>({skill_id:String(g.skill_id||""),name:String(g.name||mocks.skillName(String(g.skill_id||""))),current:num(g.current),required:num(g.required),gap:num(g.gap),critical:Boolean(g.critical)}));
-  return {employee:{employee_id:String(employee.employee_id||id),full_name:String(employee.full_name||id),department:String(employee.department||""),role:String(employee.role||""),grade:String(employee.grade||""),tenure_months:num(employee.tenure_months),skills:skills as Record<string,number>},next_grade:raw.next_grade==null?null:String(raw.next_grade),readiness_percent:raw.readiness_percent==null?null:num(raw.readiness_percent),gaps,history:(Array.isArray(raw.history)?raw.history:[]) as History[]};
+  const gaps=(Array.isArray(raw.gaps)?raw.gaps:[]) as Gap[];
+  return {
+    employee:{employee_id:String(raw.employee_id||id),full_name:String(raw.full_name||id),department:String(raw.department||""),role:String(raw.role||""),grade:String(raw.grade||""),tenure_months:num(raw.tenure_months),skills:obj(raw.skills) as Record<string,number>,preferred_language:raw.preferred_language as string|undefined,last_review_date:raw.last_review_date as string|undefined},
+    next_grade:raw.next_grade==null?null:String(raw.next_grade),
+    readiness_percent:raw.readiness_percent==null?null:num(raw.readiness_percent),
+    gaps,
+    history:(Array.isArray(raw.history)?raw.history:[]).map(h=>({...obj(h),employee_id:id})) as History[],
+  };
 }
+
 export async function recommendations(id:string):Promise<RecResponse>{
   if(useMocks){
     if(!useAi)return mocks.getRecommendations(id);
     try{return await ai.recommend(id)}
     catch(e){return {...mocks.getRecommendations(id),ai_error:e instanceof Error?e.message:"AI-сервис недоступен"}}
   }
+  // Go forwards the AI service verdict and adds catalog facts (type, format, hours) per recommendation.
   const raw=obj(await request(`/api/v1/employees/${encodeURIComponent(id)}/recommendations?lang=ru`));
-  if(Array.isArray(raw.recommendations))return raw as unknown as RecResponse; // Go forwards the AI service response as is
-  const steps=arr(raw.steps);const currentProfile=await profile(id);const current=(currentProfile.readiness_percent||0)/100;
-  const recommendations:Recommendation[]=steps.map(step=>{const evidence=arr(step.evidence);const effects=arr(step.skill_effects);const factors:Factor[]=evidence.map(e=>({type:e.factor==="grade_gap"?"grade_requirement":e.factor==="skill_gain"?"effective_gain":e.factor==="history"?"history":"skill_gap",text:String(e.text||""),skill:e.skill_id?String(e.skill_id):undefined}));for(const effect of effects)factors.push({type:"effective_gain",skill:String(effect.skill_id||""),name:mocks.skillName(String(effect.skill_id||"")),from:num(effect.current),to:num(effect.projected),text:`${mocks.skillName(String(effect.skill_id||""))}: ${num(effect.current)} → ${num(effect.projected)}`});return {event_id:String(step.event_id||""),title:String(step.title||step.event_id||"Активность"),type:String(step.type||"Развитие"),score:num(step.score),reason:String(step.reason||step.explanation||evidence.map(e=>e.text).filter(Boolean).join(". ")||"Рекомендация основана на требованиях грейда, разрыве навыков и истории."),reason_source:String(raw.model_version||"").includes("llm")?"llm":"template",factors,calculation:{gap_closed:effects.reduce((sum,e)=>sum+num(e.gap_reduction),0),engagement:num(step.engagement),formula:String(step.formula||"Подробный расчёт возвращает API")}}});
-  let afterTop=current;if(recommendations[0]){try{const preview=obj(await request(`/api/v1/employees/${encodeURIComponent(id)}/events/${encodeURIComponent(recommendations[0].event_id)}/preview`,{method:"POST"}));afterTop=num(preview.readiness_after)/100||current}catch{}}
-  return {recommendations,readiness:{current,after_top:afterTop},source:recommendations.some(r=>r.reason_source==="llm")?"llm":"fallback"};
+  return {...raw,recommendations:(Array.isArray(raw.recommendations)?raw.recommendations:[]) as Recommendation[]} as unknown as RecResponse;
 }
-/** Roadmap to the next grade. Available when the AI service is reachable directly; the Go API does not expose it yet. */
+
+/** Roadmap to the next grade: Go proxies the AI simulator; the bundled-data mode calls the AI service directly. */
 export async function roadmap(id:string):Promise<Roadmap|null>{
-  if(!useAi)return null;
-  try{return await ai.roadmap(id)}catch{return null}
+  if(useMocks){if(!useAi)return null;try{return await ai.roadmap(id)}catch{return null}}
+  try{return await request<Roadmap>(`/api/v1/employees/${encodeURIComponent(id)}/roadmap`)}catch{return null}
 }
-export async function complete(id:string,eventId:string):Promise<Profile>{if(useMocks)return mocks.complete(id,eventId);await request(`/api/v1/employees/${encodeURIComponent(id)}/events/${encodeURIComponent(eventId)}/completions`,{method:"POST",headers:{"Idempotency-Key":crypto.randomUUID()}});return profile(id)}
+
+export async function complete(id:string,eventId:string):Promise<Profile>{
+  if(useMocks)return mocks.complete(id,eventId);
+  await request(`/api/v1/employees/${encodeURIComponent(id)}/events/${encodeURIComponent(eventId)}/completions`,{method:"POST",headers:{"Idempotency-Key":crypto.randomUUID()}});
+  return profile(id);
+}
+
 export async function overview():Promise<Overview>{
   if(useMocks){
     const local=mocks.getOverview();
@@ -61,11 +89,29 @@ export async function overview():Promise<Overview>{
       return {...local,weak_skills,no_recommendation,risks,ai:true};
     }catch{return {...local,ai:false}}
   }
+  // The Go HR overview already has this shape: weak_skills, no_recommendation, participation, risks, counts, ai.
   const raw=obj(await request("/api/v1/hr/overview"));
-  return {weak_skills:(raw.weak_skills||raw.skill_gaps||[]) as Overview["weak_skills"],no_recommendation:(raw.no_recommendation||raw.employees_without_step||[]) as Overview["no_recommendation"],participation:(raw.participation||raw.activity_participation||[]) as Overview["participation"],employee_count:num(raw.employee_count),event_count:num(raw.event_count)};
+  return {
+    weak_skills:((Array.isArray(raw.weak_skills)?raw.weak_skills:[]) as WeakSkill[]).slice(0,10),
+    no_recommendation:(Array.isArray(raw.no_recommendation)?raw.no_recommendation:[]) as Overview["no_recommendation"],
+    participation:(Array.isArray(raw.participation)?raw.participation:[]) as Overview["participation"],
+    risks:(Array.isArray(raw.risks)?raw.risks:[]) as RiskRow[],
+    employee_count:num(raw.employee_count),event_count:num(raw.event_count),ai:Boolean(raw.ai),
+  };
+}
+
+function draftToEvent(draft:ImpactDraft){
+  return {event_id:"EV_DRAFT",title:draft.title||"Новое событие",type:draft.type,format:draft.format,duration_hours:draft.duration_hours,
+    audience:{roles:draft.roles,grades:draft.grades},skills:{[draft.skill_id]:{gain:draft.gain,max_level:draft.max_level}}};
 }
 export async function impact(draft:ImpactDraft):Promise<Impact>{
-  if(!useAi)throw new Error("Конструктор события работает при подключённом AI-сервисе");
-  return ai.impact(draft);
+  if(useMocks){if(!useAi)throw new Error("Конструктор события работает при подключённом AI-сервисе");return ai.impact(draft)}
+  return request<Impact>("/api/v1/hr/events/impact",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(draftToEvent(draft))});
 }
-export async function importFiles(files:{employees?:File;history?:File;events?:File;skills?:File}):Promise<ImportReport>{if(useMocks)return mocks.importData(files);const body=new FormData();for(const [key,file] of Object.entries(files))if(file)body.append(key,file);return request<ImportReport>("/api/v1/imports",{method:"POST",body})}
+
+export async function importFiles(files:{employees?:File;history?:File}):Promise<ImportReport>{
+  if(useMocks)return mocks.importData(files);
+  const body=new FormData();
+  for(const [key,file] of Object.entries(files))if(file)body.append(key,file);
+  return request<ImportReport>("/api/v1/imports",{method:"POST",body});
+}

@@ -45,7 +45,7 @@ func main() {
 		log.Fatalf("handler.NewHandler: %v", err)
 	}
 
-	srv, err := server.NewServer(handler, cfg.AuthSecret)
+	srv, err := server.NewServer(handler, cfg.AuthSecret, cfg.DemoAuth)
 	if err != nil {
 		log.Fatalf("server.NewServer: %v", err)
 	}

@@ -249,17 +249,21 @@ func importEmployees(ctx context.Context, tx *sql.Tx, data employeeDataset) erro
 }
 
 func importHistory(ctx context.Context, tx *sql.Tx, data []byte) error {
-	return importHistoryMode(ctx, tx, data, false)
+	_, _, err := importHistoryCount(ctx, tx, data, false)
+	return err
 }
 
-func importHistoryMode(ctx context.Context, tx *sql.Tx, data []byte, ignoreExisting bool) error {
+// importHistoryCount inserts history rows and reports how many were added and how many already
+// existed (same record_id) when ignoreExisting is set. A BOM at the start of the file is tolerated.
+func importHistoryCount(ctx context.Context, tx *sql.Tx, data []byte, ignoreExisting bool) (int, int, error) {
+	data = bytes.TrimPrefix(data, []byte("ï»¿"))
 	reader := csv.NewReader(bytes.NewReader(data))
 	records, err := reader.ReadAll()
 	if err != nil {
-		return fmt.Errorf("parse activity_history.csv: %w", err)
+		return 0, 0, fmt.Errorf("parse activity_history.csv: %w", err)
 	}
 	if len(records) == 0 {
-		return fmt.Errorf("activity_history.csv is empty")
+		return 0, 0, fmt.Errorf("activity_history.csv is empty")
 	}
 	positions := make(map[string]int, len(records[0]))
 	for index, name := range records[0] {
@@ -268,37 +272,44 @@ func importHistoryMode(ctx context.Context, tx *sql.Tx, data []byte, ignoreExist
 	required := []string{"record_id", "employee_id", "event_id", "date", "due_date", "status", "completion_pct", "score", "feedback_rating", "assigned_by"}
 	for _, name := range required {
 		if _, ok := positions[name]; !ok {
-			return fmt.Errorf("activity_history.csv: missing column %s", name)
+			return 0, 0, fmt.Errorf("activity_history.csv: missing column %s", name)
 		}
 	}
 
+	added, skipped := 0, 0
 	for index, record := range records[1:] {
 		field := func(name string) string { return record[positions[name]] }
 		completion, err := strconv.Atoi(field("completion_pct"))
 		if err != nil {
-			return fmt.Errorf("activity_history.csv row %d completion_pct: %w", index+2, err)
+			return added, skipped, fmt.Errorf("activity_history.csv row %d completion_pct: %w", index+2, err)
 		}
 		score, err := optionalInt(field("score"))
 		if err != nil {
-			return fmt.Errorf("activity_history.csv row %d score: %w", index+2, err)
+			return added, skipped, fmt.Errorf("activity_history.csv row %d score: %w", index+2, err)
 		}
 		rating, err := optionalInt(field("feedback_rating"))
 		if err != nil {
-			return fmt.Errorf("activity_history.csv row %d feedback_rating: %w", index+2, err)
+			return added, skipped, fmt.Errorf("activity_history.csv row %d feedback_rating: %w", index+2, err)
 		}
 		recordID := field("record_id")
 		query := "INSERT INTO activity_history(record_id, employee_id, event_id, occurred_at, due_date, status, completion_pct, score, feedback_rating, assigned_by, source, source_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?)"
 		if ignoreExisting {
 			query += " ON CONFLICT(source_key) DO NOTHING"
 		}
-		if _, err := tx.ExecContext(ctx,
+		result, err := tx.ExecContext(ctx,
 			query,
 			recordID, field("employee_id"), field("event_id"), field("date"), optionalText(field("due_date")),
-			field("status"), completion, score, rating, field("assigned_by"), recordID); err != nil {
-			return fmt.Errorf("activity_history.csv row %d (%s): %w", index+2, recordID, err)
+			field("status"), completion, score, rating, field("assigned_by"), recordID)
+		if err != nil {
+			return added, skipped, fmt.Errorf("activity_history.csv row %d (%s): %w", index+2, recordID, err)
+		}
+		if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+			skipped++
+		} else {
+			added++
 		}
 	}
-	return nil
+	return added, skipped, nil
 }
 
 func optionalInt(value string) (any, error) {

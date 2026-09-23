@@ -11,6 +11,8 @@ type Config struct {
 	DBPath     string `envconfig:"DB_PATH" default:".local/db/test.db"`
 	AIURL      string `envconfig:"AI_URL" default:"http://localhost:8001"`
 	AuthSecret string `envconfig:"AUTH_SECRET" default:"careerquest-local-demo-secret"`
+	// DemoAuth exposes POST /api/v1/auth/demo-token for the login screen. Set false outside the demo.
+	DemoAuth bool `envconfig:"DEMO_AUTH" default:"true"`
 }
 
 func NewConfig() (*Config, error) {

@@ -14,6 +14,10 @@ import (
 	"github.com/BAITC-Hacks/hack-2991e1c4-sudack/internal/repository/sqlite"
 )
 
+// aiTimeout must exceed the AI service's own LLM budget (LLM_TIMEOUT, 9 s by default) so a slow
+// but successful explanation is not cut off here; the brief allows 10 s for an AI answer.
+const aiTimeout = 12 * time.Second
+
 type Service struct {
 	repository *sqlite.Repository
 	aiURL      string
@@ -24,7 +28,7 @@ func NewService(repository *sqlite.Repository, aiURL string) (*Service, error) {
 	return &Service{
 		repository: repository,
 		aiURL:      strings.TrimRight(aiURL, "/"),
-		client:     &http.Client{Timeout: 9 * time.Second},
+		client:     &http.Client{Timeout: aiTimeout},
 	}, nil
 }
 

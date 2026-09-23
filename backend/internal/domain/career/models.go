@@ -46,14 +46,16 @@ type HistoryEntry struct {
 	Date    string `json:"date"`
 }
 
+// Request is the Sudack AI /recommend body. SkillsMeta and Events are omitted when empty so a
+// batch can send the catalog once at the top level (the AI service copies it into every item).
 type Request struct {
 	Employee              Employee             `json:"employee"`
 	NextGrade             string               `json:"next_grade"`
 	NextGradeRequirements map[string]int       `json:"next_grade_requirements"`
 	CriticalSkills        []string             `json:"critical_skills"`
-	SkillsMeta            map[string]SkillMeta `json:"skills_meta"`
+	SkillsMeta            map[string]SkillMeta `json:"skills_meta,omitempty"`
 	History               []HistoryEntry       `json:"history"`
-	Events                []Event              `json:"events"`
+	Events                []Event              `json:"events,omitempty"`
 	Lang                  string               `json:"lang"`
 	AsOf                  string               `json:"as_of"`
 }
@@ -65,4 +67,14 @@ type SkillProgress struct {
 	Required  int    `json:"required"`
 	GapBefore int    `json:"gap_before"`
 	GapAfter  int    `json:"gap_after"`
+}
+
+// GapView is one row of the profile's skills-vs-requirements table, in the shape the frontend renders.
+type GapView struct {
+	SkillID  string `json:"skill_id"`
+	Name     string `json:"name"`
+	Current  int    `json:"current"`
+	Required int    `json:"required"`
+	Gap      int    `json:"gap"`
+	Critical bool   `json:"critical"`
 }

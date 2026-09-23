@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -39,6 +40,7 @@ func (s *Service) request(ctx context.Context, employeeID, lang string, catalog 
 	return request, nil
 }
 
+// effectiveSkills applies completions recorded after the last assessment, exactly like the AI service.
 func effectiveSkills(request *career.Request) map[string]int {
 	skills := make(map[string]int, len(request.Employee.Skills))
 	for id, level := range request.Employee.Skills {
@@ -69,6 +71,7 @@ func effectiveSkills(request *career.Request) map[string]int {
 	return skills
 }
 
+// readiness mirrors the AI service: critical gaps weigh 2.5, other required skills 1.5.
 func readiness(request *career.Request, skills map[string]int) float64 {
 	var earned, total float64
 	critical := make(map[string]bool, len(request.CriticalSkills))
@@ -96,6 +99,34 @@ func readiness(request *career.Request, skills map[string]int) float64 {
 	return earned / total
 }
 
+func gapViews(request *career.Request, skills map[string]int) []career.GapView {
+	critical := make(map[string]bool, len(request.CriticalSkills))
+	for _, id := range request.CriticalSkills {
+		critical[id] = true
+	}
+	views := make([]career.GapView, 0, len(request.NextGradeRequirements))
+	for id, required := range request.NextGradeRequirements {
+		name := id
+		if meta, ok := request.SkillsMeta[id]; ok && meta.Name != "" {
+			name = meta.Name
+		}
+		views = append(views, career.GapView{
+			SkillID: id, Name: name, Current: skills[id], Required: required,
+			Gap: max(0, required-skills[id]), Critical: critical[id],
+		})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Critical != views[j].Critical {
+			return views[i].Critical
+		}
+		if views[i].Gap != views[j].Gap {
+			return views[i].Gap > views[j].Gap
+		}
+		return views[i].SkillID < views[j].SkillID
+	})
+	return views
+}
+
 func (s *Service) Profile(ctx context.Context, employeeID, lang string) (map[string]any, error) {
 	request, err := s.request(ctx, employeeID, lang, nil)
 	if err != nil {
@@ -106,12 +137,6 @@ func (s *Service) Profile(ctx context.Context, employeeID, lang string) (map[str
 		return nil, fmt.Errorf("load employee details: %w", err)
 	}
 	current := effectiveSkills(request)
-	gaps := make(map[string]int)
-	for id, required := range request.NextGradeRequirements {
-		if current[id] < required {
-			gaps[id] = required - current[id]
-		}
-	}
 	titles := make(map[string]string, len(request.Events))
 	for _, event := range request.Events {
 		titles[event.ID] = event.Title
@@ -137,6 +162,18 @@ func (s *Service) Profile(ctx context.Context, employeeID, lang string) (map[str
 			})
 		}
 	}
+	// Newest first for the timeline.
+	history := make([]career.HistoryEntry, len(request.History))
+	copy(history, request.History)
+	sort.SliceStable(history, func(i, j int) bool { return history[i].Date > history[j].Date })
+
+	ready := readiness(request, current)
+	var nextGrade any
+	var readinessPercent any
+	if request.NextGrade != "" {
+		nextGrade = request.NextGrade
+		readinessPercent = math.Round(ready*1000) / 10
+	}
 	return map[string]any{
 		"employee_id":          employeeID,
 		"full_name":            name,
@@ -144,28 +181,70 @@ func (s *Service) Profile(ctx context.Context, employeeID, lang string) (map[str
 		"role":                 request.Employee.Role,
 		"grade":                request.Employee.Grade,
 		"tenure_months":        request.Employee.TenureMonths,
-		"next_grade":           request.NextGrade,
+		"preferred_language":   request.Employee.PreferredLanguage,
+		"last_review_date":     request.Employee.LastReviewDate,
+		"next_grade":           nextGrade,
 		"skills":               current,
+		"assessment_skills":    request.Employee.Skills,
 		"skills_meta":          request.SkillsMeta,
 		"required_skills":      request.NextGradeRequirements,
 		"critical_skills":      request.CriticalSkills,
-		"gaps":                 gaps,
-		"readiness":            readiness(request, current),
+		"gaps":                 gapViews(request, current),
+		"readiness":            ready,
+		"readiness_percent":    readinessPercent,
 		"completed_activities": completed,
 		"applied_progress":     progress,
-		"history":              request.History,
+		"history":              history,
 	}, nil
 }
 
+// Recommend forwards the AI verdict and adds catalog facts (type, format, hours) the UI shows on each card.
 func (s *Service) Recommend(ctx context.Context, employeeID, lang string) (json.RawMessage, error) {
 	request, err := s.request(ctx, employeeID, lang, nil)
 	if err != nil {
 		return nil, err
 	}
 	if request.NextGrade == "" {
-		return json.RawMessage(`{"recommendations":[],"readiness":{"current":0,"after_top":0},"gaps":{},"applied_progress":[],"rejected":[],"source":"fallback","llm_provider":null,"llm_model":null,"reason":"no_next_grade"}`), nil
+		return json.RawMessage(`{"recommendations":[],"readiness":{"current":1,"after_top":1},"gaps":{},"applied_progress":[],"rejected":[],"source":"fallback","llm_provider":null,"llm_model":null,"reason":"no_next_grade"}`), nil
 	}
-	return s.callAI(ctx, "/recommend", request)
+	raw, err := s.callAI(ctx, "/recommend", request)
+	if err != nil {
+		return nil, err
+	}
+	return enrichRecommendations(raw, request.Events)
+}
+
+func enrichRecommendations(raw json.RawMessage, events []career.Event) (json.RawMessage, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return raw, nil
+	}
+	items, ok := payload["recommendations"].([]any)
+	if !ok {
+		return raw, nil
+	}
+	byID := make(map[string]career.Event, len(events))
+	for _, event := range events {
+		byID[event.ID] = event
+	}
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := entry["event_id"].(string)
+		if event, found := byID[id]; found {
+			entry["type"] = event.Type
+			entry["format"] = event.Format
+			entry["duration_hours"] = event.DurationHours
+			entry["upcoming_sessions"] = event.UpcomingSessions
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return raw, nil
+	}
+	return encoded, nil
 }
 
 func (s *Service) Simulate(ctx context.Context, employeeID, lang string) (json.RawMessage, error) {
@@ -310,6 +389,7 @@ func (s *Service) Complete(ctx context.Context, employeeID, eventID, key string)
 	if err != nil {
 		return nil, err
 	}
+	// Completions are dated no earlier than the dataset snapshot so they count as progress after the last review.
 	occurredAt := time.Now().UTC().Format("2006-01-02")
 	if occurredAt < request.AsOf {
 		occurredAt = request.AsOf

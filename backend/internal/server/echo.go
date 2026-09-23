@@ -16,11 +16,13 @@ type Server struct {
 	echo *echo.Echo
 }
 
-func NewServer(h *handler.Handler, authSecret string) (*Server, error) {
+// NewServer wires routes. demoAuth exposes POST /api/v1/auth/demo-token so the demo login screen
+// can obtain role tokens without a CLI; disable it outside the hackathon demo.
+func NewServer(h *handler.Handler, authSecret string, demoAuth bool) (*Server, error) {
 	e := echo.New()
 	corsOrigins := os.Getenv("CORS_ORIGINS")
 	if corsOrigins == "" {
-		corsOrigins = "http://localhost:5173,http://localhost:3000"
+		corsOrigins = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000"
 	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: strings.Split(corsOrigins, ","),
@@ -29,6 +31,10 @@ func NewServer(h *handler.Handler, authSecret string) (*Server, error) {
 	}))
 	e.HTTPErrorHandler = newEchoErrorHandler()
 	e.GET("/healthz", h.Health)
+	if demoAuth {
+		e.POST("/api/v1/auth/demo-token", demoToken(authSecret))
+		e.GET("/api/v1/auth/demo-employees", h.DemoEmployees)
+	}
 
 	api := e.Group("/api/v1", authenticate(authSecret))
 	api.GET("/employees/:employee_id", h.Profile)
@@ -39,6 +45,7 @@ func NewServer(h *handler.Handler, authSecret string) (*Server, error) {
 	api.GET("/hr/overview", h.HROverview)
 	api.GET("/hr/employees", h.HREmployees)
 	api.POST("/hr/events/impact", h.EventImpact)
+	api.POST("/imports", h.Imports)
 
 	return &Server{echo: e}, nil
 }

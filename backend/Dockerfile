@@ -18,7 +18,8 @@ COPY --from=builder /out/careerquest ./careerquest
 COPY --from=builder /out/careerquest-migrate ./careerquest-migrate
 COPY --from=builder /out/careerquest-token ./careerquest-token
 COPY docker/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh && mkdir -p /app/.local/db && chown -R 10001:10001 /app
+# Normalize line endings: a CRLF checkout on Windows breaks the shebang.
+RUN sed -i 's/$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh && mkdir -p /app/.local/db && chown -R 10001:10001 /app
 USER 10001:10001
 ENV PORT=8080 DB_PATH=/app/.local/db/test.db DATA_DIR=/app/data AI_URL=http://ai:8001
 EXPOSE 8080
