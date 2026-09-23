@@ -27,13 +27,10 @@ class SDKExplanationStrategy:
             "en": "Write every reason in English.",
         }[request.lang]
         prompt = {
+            "employee": {"role": request.employee.role, "grade": request.employee.grade},
             "next_grade": request.next_grade,
             "lang": request.lang,
-            "candidates": [
-                {"event_id": item.event.event_id, "title": item.event.title,
-                 "factors": item.factors}
-                for item in candidates
-            ],
+            "candidates": [llm_view(request, item) for item in candidates],
         }
         schema = {
             "type": "object",
@@ -49,15 +46,22 @@ class SDKExplanationStrategy:
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": (
-                    "You are a career navigator. Return JSON with 1 to 3 recommendations. "
-                    "Select only candidate event IDs. Use only facts provided in factors; never invent figures. "
-                    "In each reason state the exact current and required skill levels and the exact level after "
-                    "the activity. Describe participation history from the history factor: activities on the "
-                    "same skills (completed/total/missed) matter most; same-type activities on other skills are "
-                    "weaker evidence. Say when a skill is critical for the next grade. "
-                    "Explain the next-grade requirement, skill gap, participation history, and real gain. "
-                    "Mention missed activities tactfully and never blame. Write 2-3 short sentences, addressing "
-                    f"the employee respectfully. {language_instruction} Do not compare employees."
+                    "You are a career navigator. Return JSON with 1 to 3 recommendations, ordered by usefulness "
+                    "for reaching the next grade. Select only candidate event IDs. Prefer candidates with "
+                    "closes_gap=true; include a closes_gap=false candidate only when fewer than three gap-closing "
+                    "candidates exist, and say plainly that it is optional growth. Returning 1 or 2 items is fine. "
+                    "Use only the facts provided; never invent figures and never mention scores, weights or "
+                    "internal values. For each skill state the exact current level, the exact required level "
+                    "(when required is not null) and the exact level after the activity: translate each skill's "
+                    "`fact` string into the target language and keep all three numbers. "
+                    "Vocabulary: a skill with required != null is REQUIRED for the next grade; critical=true means "
+                    "it is additionally CRITICAL for promotion. A required skill that is not critical is still "
+                    "required, so never say it is 'not required' or 'not important'. Use skill names and grade "
+                    "names exactly as given. Describe participation history from the history facts: activities on "
+                    "the same skills (completed/total/missed) matter most; same-type activities on other skills "
+                    "are weaker evidence; mention missed activities tactfully and never blame. Each reason must be "
+                    "specific to its event and different from the other reasons. Write 2-3 short sentences, "
+                    f"addressing the employee respectfully. {language_instruction} Do not compare employees."
                 )},
                 {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
             ],
@@ -93,6 +97,42 @@ class FailoverExplanationStrategy:
             except Exception:
                 continue
         raise RuntimeError("No LLM provider returned a usable response")
+
+
+def llm_view(request: RecommendRequest, candidate: Candidate) -> dict[str, Any]:
+    """What the LLM is allowed to see: facts, not scoring internals."""
+    history = next(factor for factor in candidate.factors if factor["type"] == "history")
+    skills = []
+    for skill, (current, new) in candidate.gains.items():
+        required = request.next_grade_requirements.get(skill)
+        name = request.skills_meta.get(skill).name if skill in request.skills_meta else skill
+        critical = skill in request.critical_skills and required is not None
+        if required is None:
+            fact = f"{name}: current {current}, not required for {request.next_grade}, after this activity {new}"
+        else:
+            fact = (f"{name}: current {current}, required {required} for {request.next_grade}"
+                    f"{' (critical)' if critical else ''}, after this activity {new}")
+        skills.append({
+            "skill_id": skill,
+            "name": name,
+            "current": current,
+            "required": required,
+            "after": new,
+            "critical": critical,
+            "closes_gap": required is not None and current < required,
+            "fact": fact,
+        })
+    description = (candidate.event.description or "")[:240] or None
+    return {
+        "event_id": candidate.event.event_id,
+        "title": candidate.event.title,
+        "type": candidate.event.type,
+        "description": description,
+        "closes_gap": candidate.closes_gap,
+        "skills": skills,
+        "facts_sentence": "; ".join(item["fact"] for item in skills) + ". History: " + history["text"] + ".",
+        "history": {key: value for key, value in history.items() if key != "type"},
+    }
 
 
 def template_explain(request: RecommendRequest, candidate: Candidate) -> str:

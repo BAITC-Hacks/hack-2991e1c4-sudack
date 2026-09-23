@@ -59,6 +59,7 @@ async def audit(employee_id: str) -> None:
         raise SystemExit("OPENAI_API_KEY is not configured")
     request = RecommendRequest.model_validate(load_payload(employee_id))
     candidates = ScoringService().rank(request)[:5]
+    # NOTE: the service itself prefers gap-closing candidates; this list is the raw top five.
 
     class RecordingStrategy:
         proposal = None
@@ -105,7 +106,8 @@ async def audit(employee_id: str) -> None:
             "source": verdict.source,
             "readiness": verdict.readiness.model_dump(),
             "recommendations": [
-                {"event_id": item.event_id, "score": item.score, "reason": item.reason}
+                {"event_id": item.event_id, "score": item.score,
+                 "reason_source": item.reason_source, "reason": item.reason}
                 for item in verdict.recommendations
             ],
         },

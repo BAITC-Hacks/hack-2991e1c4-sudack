@@ -16,3 +16,11 @@ The live responses were produced before the stricter validation was added. Curre
 ## Update after code review
 
 Validation is now per item: an ungrounded or unknown item is dropped and the remaining grounded items are kept, so one bad sentence no longer discards a good verdict. The required numeric facts are the current, required, and resulting skill levels; history counts may be stated in words. Only validated `llm` answers are cached, so a transient provider failure is not pinned as `fallback`. Scoring changed as well: critical skills weigh 2.5, similarity is skill-based with same-type history at 0.3, history older than a year at 0.6, and in-progress events are not recommended again. The live prompt has still not been re-run; do so with `uv run python scripts/audit_verdict.py --live E0002` before the demo.
+
+## Live re-audit, 2026-09-23 (E0004 ru, E0005 kk, E0008 en, E0025 kk)
+
+Round 1 on `gpt-4o-mini` with the previous prompt: every call returned `source: "llm"`, but the model quoted scoring weights as levels ("закроет 2.5 из 2"), copy-pasted one reason onto two events (E0005), called a required skill "not required" because it was not critical (E0005, E0008), and omitted the required level so the validator dropped the two best critical-gap picks for E0004 and left only Public Speaking Club.
+
+Fixes: the LLM now receives a sanitized fact view (skill names, current/required/after, `critical`, `closes_gap`, event description, history counts, and a ready-made `fact` sentence per skill) and never sees weights; candidates are gap-closing first; the prompt defines required vs critical and forbids duplicate reasons; an ungrounded or duplicate reason is replaced by the template for that event instead of dropping the event; each recommendation reports `reason_source`.
+
+Round 2 on `gpt-4o-mini`: E0004 and E0008 selections correct, one reason each templated (missing history mention or a false "not required" claim caught by the level check). E0005 initially fell back because both Kazakh reasons omitted the required level; with the `fact` sentences it passed with two `llm` reasons. Round 2 on `gpt-4o`: E0005 and E0008 returned all reasons as `llm`, mentioning the event title, all three levels, and history. `LLM_MODEL=gpt-4o` is now the documented default.

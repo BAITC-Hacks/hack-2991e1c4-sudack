@@ -25,6 +25,7 @@ class Candidate:
     gains: dict[str, tuple[int, int]]
     factors: list[dict]
     primary_skill: str
+    closes_gap: bool
 
 
 def skill_gaps(skills: dict[str, int], requirements: dict[str, int]) -> dict[str, int]:
@@ -56,7 +57,7 @@ def readiness(skills: dict[str, int], requirements: dict[str, int], critical: li
     return round(1 - missing / total, 2) if total else 1.0
 
 
-def _parse_date(value: str | None) -> date | None:
+def parse_date(value: str | None) -> date | None:
     if not value:
         return None
     try:
@@ -65,14 +66,49 @@ def _parse_date(value: str | None) -> date | None:
         return None
 
 
+def apply_progress(request: RecommendRequest) -> tuple[dict[str, int], list[dict]]:
+    """Skill levels reflect the last assessment; completions after `last_review_date`
+    are applied on top so progress is visible before the next review."""
+    skills = dict(request.employee.skills)
+    review = parse_date(request.employee.last_review_date)
+    if review is None:
+        return skills, []
+    events_by_id = {event.event_id: event for event in request.events}
+    applied = []
+    completed = [
+        (parse_date(entry.date), entry) for entry in request.history
+        if entry.status == "completed" and parse_date(entry.date) is not None
+    ]
+    for when, entry in sorted(completed, key=lambda pair: pair[0]):
+        if when <= review or entry.event_id not in events_by_id:
+            continue
+        for skill, (current, new) in effective_gain(events_by_id[entry.event_id], skills).items():
+            skills[skill] = new
+            applied.append({"event_id": entry.event_id, "skill": skill, "from": current, "to": new})
+    return skills, applied
+
+
+def participation(history: list[HistoryEntry]) -> dict:
+    """Compact engagement summary for the HR view: who is dropping out of development."""
+    dates = [d for d in (parse_date(entry.date) for entry in history) if d]
+    return {
+        "completed": sum(entry.status == "completed" for entry in history),
+        "missed": sum(entry.status in MISSED_STATUSES for entry in history),
+        "in_progress": sum(entry.status == "in_progress" for entry in history),
+        "total": len(history),
+        "last_activity_date": max(dates).isoformat() if dates else None,
+    }
+
+
 class ScoringService:
-    def rank(self, request: RecommendRequest) -> list[Candidate]:
+    def rank(self, request: RecommendRequest, skills: dict[str, int] | None = None) -> list[Candidate]:
         employee = request.employee
-        gaps = skill_gaps(employee.skills, request.next_grade_requirements)
+        skills = skills if skills is not None else apply_progress(request)[0]
+        gaps = skill_gaps(skills, request.next_grade_requirements)
         events_by_id = {event.event_id: event for event in request.events}
         completed = {entry.event_id for entry in request.history if entry.status == "completed"}
         active = {entry.event_id for entry in request.history if entry.status in ACTIVE_STATUSES}
-        latest = max((d for d in (_parse_date(entry.date) for entry in request.history) if d), default=None)
+        latest = max((d for d in (parse_date(entry.date) for entry in request.history) if d), default=None)
         candidates = []
 
         for event in request.events:
@@ -84,9 +120,12 @@ class ScoringService:
                 continue
             if event.audience.grades and employee.grade not in event.audience.grades:
                 continue
-            if any(employee.skills.get(skill, 0) < level for skill, level in event.prerequisites.items()):
+            if any(skills.get(skill, 0) < level for skill, level in event.prerequisites.items()):
                 continue
-            gains = effective_gain(event, employee.skills)
+            # A scheduled (non self-paced) event with no upcoming session cannot be attended.
+            if event.format and event.format != "self_paced" and event.upcoming_sessions == []:
+                continue
+            gains = effective_gain(event, skills)
             if not gains:
                 continue
 
@@ -112,14 +151,15 @@ class ScoringService:
             gap_closed = sum(contributions.values())
             score = gap_closed * engagement**0.7
             primary = max(contributions, key=lambda skill: (contributions[skill], skill in request.critical_skills))
+            closes_gap = any(gaps.get(skill, 0) > 0 for skill in gains)
             factors = self._factors(request, gains, contributions, primary, related, same_type)
-            candidates.append(Candidate(event, score, gap_closed, engagement, gains, factors, primary))
+            candidates.append(Candidate(event, score, gap_closed, engagement, gains, factors, primary, closes_gap))
 
         return self._diversify(candidates)
 
     @staticmethod
     def _recency(entry: HistoryEntry, latest: date | None) -> float:
-        when = _parse_date(entry.date)
+        when = parse_date(entry.date)
         if latest is None or when is None:
             return 1.0
         return 1.0 if (latest - when).days <= RECENT_DAYS else OLD_HISTORY_WEIGHT
@@ -177,7 +217,7 @@ class ScoringService:
                 ), "critical": critical}
             factors.extend([
                 relevance,
-                {"type": "skill_gap", "skill": skill, "current": current, "required": required},
+                {"type": "skill_gap", "skill": skill, "name": name, "current": current, "required": required},
             ])
             if skill == primary:
                 factors.append(history)

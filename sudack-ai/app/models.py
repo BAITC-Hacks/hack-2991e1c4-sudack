@@ -15,6 +15,7 @@ class Employee(BaseModel):
     grade: str = Field(min_length=1)
     tenure_months: int | None = Field(default=None, ge=0)
     preferred_language: Language | None = None
+    last_review_date: str | None = None
     skills: dict[str, SkillLevel]
 
 
@@ -43,6 +44,9 @@ class Event(BaseModel):
     event_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     type: str
+    description: str | None = None
+    format: str | None = None
+    upcoming_sessions: list[str] | None = None
     audience: Audience = Field(default_factory=Audience)
     skills: dict[str, SkillGain] = Field(default_factory=dict)
     mandatory: bool = False
@@ -112,6 +116,7 @@ class Recommendation(BaseModel):
     title: str
     score: float
     reason: str
+    reason_source: Literal["llm", "template"] = "template"
     factors: list[dict[str, Any]]
     calculation: Calculation
 
@@ -119,6 +124,8 @@ class Recommendation(BaseModel):
 class RecommendResponse(BaseModel):
     recommendations: list[Recommendation]
     readiness: Readiness
+    gaps: dict[str, int] = Field(default_factory=dict)
+    applied_progress: list[dict[str, Any]] = Field(default_factory=list)
     source: Literal["llm", "fallback"]
 
 
@@ -137,6 +144,7 @@ class BatchResult(BaseModel):
     top: list[BatchTopItem]
     readiness: float
     gaps: dict[str, int] = Field(default_factory=dict)
+    participation: dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchResponse(BaseModel):
