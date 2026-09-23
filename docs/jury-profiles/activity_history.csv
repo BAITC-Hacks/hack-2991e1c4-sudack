@@ -1,0 +1,12 @@
+record_id,employee_id,event_id,date,due_date,status,completion_pct,score,feedback_rating,assigned_by
+R900001,E0901,EV_004,2022-03-21,2022-04-14,completed,100,88,,hr
+R900002,E0901,EV_005,2025-03-10,,completed,100,81,4,self
+R900003,E0901,EV_040,2025-09-15,,completed,100,,5,self
+R900004,E0901,EV_036,2026-05-13,,no_show,0,,,manager
+R900005,E0901,EV_036,2026-06-24,,no_show,0,,,manager
+R900006,E0901,EV_036,2026-07-22,,no_show,0,,,self
+R900007,E0902,EV_004,2021-11-08,2021-12-01,completed,100,92,,hr
+R900008,E0902,EV_037,2025-04-17,,completed,100,,4,self
+R900009,E0902,EV_005,2025-06-23,,completed,100,77,4,self
+R900010,E0902,EV_011,2026-02-09,,completed,100,,3,manager
+R900011,E0903,EV_004,2026-07-06,2026-08-01,completed,100,90,,hr
