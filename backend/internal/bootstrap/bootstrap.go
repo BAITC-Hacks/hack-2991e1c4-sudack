@@ -249,6 +249,10 @@ func importEmployees(ctx context.Context, tx *sql.Tx, data employeeDataset) erro
 }
 
 func importHistory(ctx context.Context, tx *sql.Tx, data []byte) error {
+	return importHistoryMode(ctx, tx, data, false)
+}
+
+func importHistoryMode(ctx context.Context, tx *sql.Tx, data []byte, ignoreExisting bool) error {
 	reader := csv.NewReader(bytes.NewReader(data))
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -283,8 +287,12 @@ func importHistory(ctx context.Context, tx *sql.Tx, data []byte) error {
 			return fmt.Errorf("activity_history.csv row %d feedback_rating: %w", index+2, err)
 		}
 		recordID := field("record_id")
+		query := "INSERT INTO activity_history(record_id, employee_id, event_id, occurred_at, due_date, status, completion_pct, score, feedback_rating, assigned_by, source, source_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?)"
+		if ignoreExisting {
+			query += " ON CONFLICT(source_key) DO NOTHING"
+		}
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO activity_history(record_id, employee_id, event_id, occurred_at, due_date, status, completion_pct, score, feedback_rating, assigned_by, source, source_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?)",
+			query,
 			recordID, field("employee_id"), field("event_id"), field("date"), optionalText(field("due_date")),
 			field("status"), completion, score, rating, field("assigned_by"), recordID); err != nil {
 			return fmt.Errorf("activity_history.csv row %d (%s): %w", index+2, recordID, err)

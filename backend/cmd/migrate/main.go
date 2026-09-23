@@ -12,7 +12,17 @@ import (
 func main() {
 	dbPath := flag.String("db", envOr("DB_PATH", ".local/db/test.db"), "SQLite database path")
 	dataDir := flag.String("data", envOr("DATA_DIR", "../sudack-ai/docs/data"), "dataset directory")
+	appendMode := flag.Bool("append", false, "append new employees and history to an existing database")
 	flag.Parse()
+
+	if *appendMode {
+		added, err := bootstrap.Append(context.Background(), *dbPath, *dataDir)
+		if err != nil {
+			log.Fatalf("bootstrap.Append: %v", err)
+		}
+		log.Printf("added %d employees and imported new history rows into %s", added, *dbPath)
+		return
+	}
 
 	created, err := bootstrap.Initialize(context.Background(), *dbPath, *dataDir)
 	if err != nil {

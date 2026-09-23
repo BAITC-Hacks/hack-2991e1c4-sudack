@@ -1,8 +1,26 @@
 services:
+  ai:
+    build:
+      context: ../sudack-ai
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      ai:
+        condition: service_healthy
+    environment:
+      AI_URL: http://ai:8001
+      AUTH_SECRET: ${AUTH_SECRET:-careerquest-local-demo-secret}
     ports:
       - "8080:8080"
     volumes:

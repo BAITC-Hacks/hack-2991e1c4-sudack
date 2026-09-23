@@ -11,21 +11,22 @@ import (
 
 func newEchoErrorHandler() echo.HTTPErrorHandler {
 	return func(err error, c echo.Context) {
-		resp := &errs.Error{
-			HTTPCode: http.StatusInternalServerError,
-			Code:     "INTERNAL_SERVER_ERROR",
-			Message:  err.Error(),
+		if c.Response().Committed {
+			return
 		}
-
 		slog.Error(err.Error())
 
-		var e *errs.Error
-		if errors.As(err, &e) {
-			resp = e
-		} else {
-			resp.Message = err.Error()
+		var domainErr *errs.Error
+		if errors.As(err, &domainErr) {
+			_ = c.JSON(domainErr.HTTPCode, domainErr)
+			return
 		}
-
-		_ = c.JSON(resp.HTTPCode, resp)
+		var echoErr *echo.HTTPError
+		if errors.As(err, &echoErr) {
+			_ = c.JSON(echoErr.Code, errs.NewError(echoErr.Code, "HTTP_ERROR", http.StatusText(echoErr.Code)))
+			return
+		}
+		_ = c.JSON(http.StatusInternalServerError,
+			errs.NewError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "internal server error"))
 	}
 }

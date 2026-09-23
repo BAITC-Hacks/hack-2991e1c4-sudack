@@ -121,7 +121,7 @@ CREATE TABLE activity_history (
 );
 
 CREATE UNIQUE INDEX ux_app_completion ON activity_history(employee_id, event_id)
-    WHERE source = 'app' AND status = 'completed';
+    WHERE source = 'app' AND status = 'completed' AND event_id != 'EV_036';
 CREATE INDEX ix_history_employee_date ON activity_history(employee_id, occurred_at DESC);
 CREATE INDEX ix_history_event_status ON activity_history(event_id, status);
 CREATE INDEX ix_requirements_skill ON grade_requirements(skill_id, role, grade);

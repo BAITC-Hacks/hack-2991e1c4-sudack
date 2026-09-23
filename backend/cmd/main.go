@@ -1,3 +1,8 @@
+// @title Career Quest API
+// @version 1.0
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
 package main
 
 import (
@@ -19,7 +24,7 @@ func main() {
 		log.Fatalf("config.NewConfig: %v", err)
 	}
 
-	db, err := sql.Open("sqlite3", cfg.DBPath)
+	db, err := sql.Open("sqlite3", cfg.DBPath+"?_foreign_keys=on&_busy_timeout=5000&_txlock=immediate")
 	if err != nil {
 		log.Fatalf("sql.Open: %v", err)
 	}
@@ -30,7 +35,7 @@ func main() {
 		log.Fatalf("sqlite.NewRepository: %v", err)
 	}
 
-	service, err := service.NewService(sqliteRepository)
+	service, err := service.NewService(sqliteRepository, cfg.AIURL)
 	if err != nil {
 		log.Fatalf("service.NewService: %v", err)
 	}
@@ -40,7 +45,7 @@ func main() {
 		log.Fatalf("handler.NewHandler: %v", err)
 	}
 
-	srv, err := server.NewServer(handler)
+	srv, err := server.NewServer(handler, cfg.AuthSecret)
 	if err != nil {
 		log.Fatalf("server.NewServer: %v", err)
 	}

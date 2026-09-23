@@ -1,146 +1,50 @@
-# Career Quest: бэкенд
+# Career Quest backend contract
 
-## Состояние репозитория и цель
+## Scope
 
-Это технический контракт для Go-бэкенда и Python-сервиса рекомендаций. Сейчас есть GET /healthz, SQLite-схема и отдельная программа cmd/migrate для начальной загрузки ../sudack-ai/docs/data. Остальные HTTP-обработчики, авторизация и вызов Python **ещё не реализованы**.
+Go 1.26.1, Echo v4, SQLite/sqlc. The synthetic dataset comes from ../sudack-ai/docs/data. cmd/migrate creates the schema and imports the four files before the backend starts. There is no HTTP import endpoint. The SQLite file survives container restarts in a named volume. The command does not overwrite an existing database.
 
-Демо-сценарий: запустить сервер с китом и дополнительными профилями жюри → открыть сотрудника → получить 1–3 объяснимых шага → увидеть прогноз изменения навыков → завершить активность → увидеть новый прогресс и HR-срез. Геймификация в этот путь не входит.
+The backend exposes employee profiles, explanations and recommendations, skill previews, activity completion, grade roadmaps, and HR views. Sudack AI is stateless and receives the employee, next-grade requirements, critical skills, catalog and participation history in each request. AI failures return a structured 503/502 from Go; the AI service itself returns a deterministic fallback when no LLM provider is available.
 
-## Стек и границы ответственности
+## Data and progress
 
-| Компонент | Ответственность |
-| --- | --- |
-| Go 1.26.1 + Echo v4 | HTTP, права доступа, валидация, загрузка данных при старте, выбор допустимых событий, расчёт прогресса, транзакции |
-| SQLite + sqlc | Хранение и типизированные запросы |
-| Python-сервис | Ранжирование допустимых кандидатов и структурированные объяснения; запись в БД запрещена |
+The migration keeps all six starter-kit history statuses, critical grade skills, career goals, mandatory events, prerequisites, sessions, and source metadata. Grade order is Junior, Middle, Senior, Lead. The importer uses the source employee skills as the last assessment snapshot and never replays historical completions during import.
 
-Миграция: internal/migrations/1_init.sql. Запросы: internal/repository/sqlite/queries.sql. Конфигурация sqlc: internal/repository/sqlite/sqlc.yaml.
+Current level = assessment level plus gains from completed history rows dated after last_review_date, in date order. Each event gain is capped at max_level and never lowers a skill. Completion appends one history row; it does not update the assessment snapshot. This matches the Sudack AI contract and prevents double counting. The dataset snapshot date is passed as as_of, so its historical recency and future sessions are evaluated consistently.
 
-Цель по времени: обычные ответы до 2 секунд, рекомендации до 10 секунд. Таймаут вызова Python — 9 секунд; при недоступности вернуть 503, не выдавая фиктивный AI-ответ. Сервер и мигратор используют один DB_PATH. Docker entrypoint запускает мигратор перед сервером; при существующем файле БД мигратор ничего не меняет. Перед демо нужны остальные роуты и подключение Python.
+Target grade comes from career_goal.target_grade when present, otherwise the next grade for the current role. Critical skills are sent to AI; its scoring weights critical gaps more strongly. Mandatory events are never recommendation targets. EV_036 is recurring. Go preview checks audience, prerequisites, sessions, existing progress and positive gain before showing an effect. The AI service applies its own eligibility logic to recommendations and roadmaps.
 
-## Схема и импорт
+## Routes
 
-| Файл кита | Таблицы |
-| --- | --- |
-| employees.json | employees, employee_skills |
-| skills.json | skills, grade_levels, grade_requirements |
-| events.json | events, event_audience_roles, event_audience_grades, event_skill_effects |
-| activity_history.csv | activity_history |
+| Route | Access | Backend behavior |
+| --- | --- | --- |
+| GET /healthz | Public | sqlc SELECT 1 |
+| GET /api/v1/employees/:employee_id | Self or HR | Current profile, requirements, gaps, weighted readiness and history |
+| GET /api/v1/employees/:employee_id/recommendations | Self or HR | AI POST /recommend; returns factors, calculation, rejected alternatives and source |
+| GET /api/v1/employees/:employee_id/roadmap | Self or HR | AI POST /simulate |
+| POST /api/v1/employees/:employee_id/events/:event_id/preview | Self or HR | Pure local gain/readiness projection |
+| POST /api/v1/employees/:employee_id/events/:event_id/completions | Self | Transactional history write, Idempotency-Key required |
+| GET /api/v1/hr/employees | HR | IDs for profile selection |
+| GET /api/v1/hr/overview | HR | AI POST /score/batch plus SQL participation counts |
+| POST /api/v1/hr/events/impact | HR | AI POST /events/impact for a draft event body |
 
-Импортер преобразует фактическую схему кита в эти таблицы. Названия ролей и грейдов сохраняются без переименования. Порядок грейдов задаётся явной таблицей рангов после сверки с README кита; сортировка названий по алфавиту недопустима. Ранги внутри роли должны идти подряд: запрос следующего грейда ищет rank + 1. Переводы названий берутся из кита; при отсутствии ru/kk API возвращает en. Для верхнего грейда next_grade = null и рекомендаций по переходу нет.
+The HR overview aggregates skill gap frequency, missing levels, activity participation by each of the six statuses, employees with no suggested step, and dropout-risk reasons. It is private to HR; there is no public performance ranking.
 
-Правила данных:
+## Security and errors
 
-1. Уровни навыков из employees.json — текущий снимок. История за 24 месяца при импорте **не начисляет уровни повторно**.
-2. Отсутствующая пара сотрудник–навык означает уровень 0. Уровни и требования — целые числа 0–5.
-3. После завершения события новый уровень = max(текущий, min(5, max_level, текущий + gain)). Лимит активности никогда не снижает уже достигнутый навык.
-4. Пустой список ролей или грейдов в аудитории означает отсутствие ограничения по соответствующему измерению. Если оба списка заполнены, должны совпасть оба.
-5. Статусы истории: completed, in_progress, dropped, no_show, declined, overdue. Ранее завершённое событие не предлагается повторно. Пропуск или отказ влияет на рейтинг, но не запрещает событие.
-6. В импортированной истории может быть несколько прохождений одного типа события. Через приложение одно событие можно завершить один раз.
-7. Для каждой строки истории source_key — SHA-256 канонических полей строки и порядкового номера среди идентичных строк этого файла. Повторная загрузка того же файла не дублирует историю. Источник импортированных записей — import, ручных — app.
+Except /healthz, endpoints require a signed HS256 bearer token with subject and role=employee|hr. Employee subjects can see and change only their own records. HR can read profiles and HR views but cannot mark an employee activity completed. cmd/token creates demo tokens using AUTH_SECRET. Configure a non-default AUTH_SECRET for any deployment outside the local demo.
 
-Команда cmd/migrate читает все четыре файла из каталога данных, создаёт схему и заполняет таблицы одной транзакцией во временном SQLite-файле. После успешного commit файл атомарно публикуется по DB_PATH. Если файл уже есть, команда ничего не меняет. Вместе с основными сущностями сохраняются критичные навыки, карьерные цели, обязательность и prerequisites событий, все шесть статусов истории и исходные метаданные. Снимок навыков из employees.json не пересчитывается по истории.
+Errors use internal/domain/errs/errors.go: JSON contains code and message, while HTTPCode controls the status and is omitted from JSON. Internal SQL and AI errors are logged and not exposed as 500 response text.
 
-Локальный запуск из каталога backend:
+## Run
 
-    go run ./cmd/migrate -db .local/db/test.db -data ../sudack-ai/docs/data
-
-Для проверки дополнительных профилей можно указать другой каталог с теми же четырьмя файлами до первого создания БД. После создания файла добавление новых профилей отдельной командой пока не поддерживается.
-
-## Общие правила API
-
-Базовый путь /api/v1. Тела запросов и ответов — JSON UTF-8; даты — ISO 8601 UTC. Ошибочный ответ имеет точную форму internal/domain/errs/errors.go — без внешнего поля error и без details:
-
-    {"code":"INVALID_PARAMETER","message":"invalid parameter"}
-
-HTTP-статус берётся из Error.HTTPCode и не включается в JSON. Код — стабильная строка в верхнем регистре; message — короткое понятное описание конкретной ошибки. Предлагаемые пары: 400/INVALID_PARAMETER, 401/UNAUTHORIZED, 403/FORBIDDEN, 404/NOT_FOUND, 409/CONFLICT, 422/UNPROCESSABLE_ENTITY, 503/RECOMMENDATION_UNAVAILABLE, 500/INTERNAL_ERROR. Ошибки начальной загрузки пишутся мигратором в stderr с названием файла или записи. Не отдавать клиенту внутренний текст SQL или ошибку Python.
-
-Целевая модель доступа: подписанный bearer-токен с subject=employee_id и role=employee|hr. Сотрудник читает только свой профиль и историю, запрашивает свои рекомендации/прогноз и завершает свои события. HR читает любые профили, агрегаты и загружает данные. Выпуск токенов вне этого API; для локального демо тестовые токены задаются конфигурацией. Заголовок с ролью от клиента не считается авторизацией. Детальная вовлечённость одного сотрудника не раскрывается другим сотрудникам.
-
-### 1. GET /healthz
-
-Публичная проверка процесса и SQLite. Выполнить сгенерированный sqlc-запрос HealthCheck (SELECT 1). Ответ 200: {"status":"ok","database":"ok"}. При недоступной БД — 503 с {"code":"SERVICE_UNAVAILABLE","message":"database unavailable"}. Python не проверять, чтобы healthz оставался быстрым.
-
-### 2. GET /api/v1/employees/:employee_id
-
-**Права:** сам сотрудник или HR. Параметр lang=en|ru|kk, по умолчанию en.
-
-**Ответ:** роль, грейд, стаж, текущие навыки, следующий грейд, требования и разрывы, готовность, завершённые события и история пропусков/отказов. Историю ограничить страницей; при необходимости добавить cursor.
-
-**SQL:** GetEmployee → ListEmployeeSkills → GetNextGrade → ListGradeGaps для следующего грейда → ListEmployeeHistory. Нет следующего грейда: next_grade=null, requirements=[], readiness_percent=null.
-
-**Расчёт:** gap = max(0, required-current). readiness_percent = 100 × sum(min(current,required)) / sum(required), округление до одного знака. При пустых требованиях — null. Это показатель покрытия требований, а не решение о повышении.
-
-Пример:
-
-    {"employee_id":"E0028","role":"Backend Engineer","grade":"Middle","next_grade":"Senior","readiness_percent":72.5,"gaps":[{"skill_id":"SK_SYSTEM_DESIGN","current":2,"required":4,"gap":2}]}
-
-### 3. GET /api/v1/employees/:employee_id/recommendations
-
-**Права:** сам сотрудник или HR. Параметр lang=en|ru|kk. Ответ содержит от 1 до 3 шагов. Если полезных шагов нет, вернуть пустой массив и причину no_next_grade, no_eligible_event или no_positive_gain.
-
-**SQL:** GetEmployee, GetNextGrade, ListGradeGaps, ListEmployeeHistory, ListHistoryEvidence, ListEligibleEvents, затем ListEventEffects для каждого доступного события.
-
-**Отбор в Go:** оставить активные события подходящей аудитории, ещё не завершённые сотрудником. Событие должно уменьшать хотя бы один разрыв следующего грейда. Фактический прирост = max(current,min(max_level,current+gain))-current. Покрытие разрыва по навыку = min(required,current+прирост)-min(required,current). В Python отправлять все допустимые события одним запросом.
-
-**Контракт Python:** вход — роль, грейд, стаж, целевой грейд, уровни и требования, история за 24 месяца с типами событий и развиваемыми навыками, кандидаты с точными эффектами. Личные имена не передавать. Выход — event_id, score и структурированные факторы. Go проверяет, что ID был среди кандидатов, сортирует по score и event_id, оставляет максимум три, строит локализованный текст только из проверенных фактов.
-
-Обязательные факторы: требования следующего грейда и величина разрыва, эффект активности, история участия, соответствие аудитории роли/грейда. Упоминать «пройдено в срок» можно только если в ките есть дедлайны. Для истории можно брать сглаженную долю завершений похожих событий: (completed + 1) / (completed + skipped + declined + 2); похожесть определяется пересечением развиваемых навыков, при отсутствии истории значение 0.5. Воспроизводимый стартовый скоринг: 0.55 × нормированное покрытие разрыва + 0.20 × соответствие истории + 0.15 × соответствие аудитории + 0.10 × разнообразие/давность. ML-инженер может улучшить формулу, но API должен вернуть значения факторов и факты, на которых основано объяснение. Если применяется только эвристика, не называть её LLM.
-
-**Ответ:** event_id, локализованное название, score, next_grade, skill_effects с current/projected/required/gap_reduction, evidence[] с factor/value/text, model_version. В объяснении минимум три реальных фактора. Низкий Public Speaking сам по себе не должен обгонять критичный разрыв System Design для Senior при релевантной истории.
-
-Пример:
-
-    {"employee_id":"E0028","model_version":"baseline-v1","steps":[{"event_id":"EV_SYSTEM_DESIGN","score":0.83,"evidence":[{"factor":"grade_gap","text":"System Design 2/4 для Senior"},{"factor":"skill_gain","text":"Активность повысит навык до 3"},{"factor":"history","text":"Пройдены 2 похожие активности"}]}]}
-
-### 4. POST /api/v1/employees/:employee_id/events/:event_id/preview
-
-**Права:** сам сотрудник или HR. Без тела. Это прогноз без записи. Его можно запросить для любого полезного допустимого события, даже если оно не вошло в топ-3.
-
-**SQL:** GetEmployee, GetEvent, проверка аудитории через ListEligibleEvents, HasCompletedEvent, ListEventEffects, GetNextGrade, ListGradeGaps. Для каждого эффекта применить тот же расчёт уровня, что при завершении. Подставить прогнозные уровни в требования и вычислить readiness_before и readiness_after. Вернуть before, gain, max_level, after и gap_reduction по навыкам. Если событие не подходит или уже завершено — 409 с причиной.
-
-### 5. POST /api/v1/employees/:employee_id/events/:event_id/completions
-
-**Права:** только сам сотрудник. Обязательный заголовок Idempotency-Key; необязательное occurred_at, по умолчанию время сервера UTC. Первый запрос — 200. Повтор с тем же ключом и событием — 200, replayed=true. Тот же ключ с другим событием или завершение события под новым ключом — 409.
-
-**Транзакция:** начать немедленную write-транзакцию; найти ключ; проверить сотрудника, событие, активность, аудиторию, предыдущее завершение и положительный эффект; для каждого навыка вычислить новый уровень по правилу роста; выполнить UpsertEmployeeSkill; вставить completed/source=app через InsertCompletion; commit. После commit заново прочитать профиль и разрывы. Повторный запрос возвращает текущий профиль и replayed=true, а не начисляет gain повторно. Уникальные индексы закрывают гонку параллельных запросов.
-
-**SQL:** GetHistoryByIdempotencyKey, GetEmployee, GetEvent, HasCompletedEvent, ListEventEffects, UpsertEmployeeSkill, InsertCompletion в одной транзакции через sqlc WithTx. После commit — запросы профиля. Импортированную историю не менять.
-
-### 6. GET /api/v1/hr/overview
-
-**Права:** только HR. Без публичного рейтинга сотрудников.
-
-**Ответ:** навыки, по которым чаще всего есть разрыв до следующего грейда; числа completed/skipped/declined по событиям; ID сотрудников без полезного доступного следующего шага.
-
-**SQL:** HRSkillGaps считает сотрудников с разрывом и суммарные недостающие уровни; HRActivityParticipation группирует участия по статусу; HREmployeesWithoutStep ищет сотрудников, которым ни одно активное событие подходящей аудитории ещё не может уменьшить разрыв и не было завершено. Сотрудников верхнего грейда исключить из списка «без шага»: у них нет заданной следующей цели. После завершения активности агрегаты читают обновлённые навыки сразу.
-
-Список «без шага» показывает пробел каталога, не оценку сотрудника. При масштабе кита три индексированных запроса должны быть быстрыми. Если потребуется кэш, инвалидировать его после импорта и завершения.
-
-## Запуск в Docker
-
-SQLite работает как файл, отдельный сервер БД не нужен. Образ содержит два Go-бинарника: сервер и cmd/migrate. При старте entrypoint вызывает мигратор, затем сервер. Каталог данных монтируется только для чтения; SQLite хранится в именованном томе.
+From backend:
 
     docker compose up --build
 
-Compose монтирует ../sudack-ai/docs/data в /app/data. При ручном docker run нужно также передать этот каталог через -v, иначе мигратор не найдёт skills.json.
+Compose mounts ../sudack-ai/docs/data at /app/data and starts the AI service before Go. DB_PATH defaults to /app/.local/db/test.db in Docker and DATA_DIR to /app/data. AI_URL is http://ai:8001. Without a mounted dataset on first startup, entrypoint identifies the missing file. For direct local use:
 
-DB_PATH по умолчанию в образе — /app/.local/db/test.db, DATA_DIR — /app/data. Для каталога хоста вместо именованного тома нужны права на запись для UID 10001. Образ собирает go-sqlite3 с CGO.
+    go run ./cmd/migrate -db .local/db/test.db -data ../sudack-ai/docs/data
+    go run ./cmd
 
-## SQLite и sqlc
-
-Миграция применяется cmd/migrate только при отсутствии файла БД. Внешние ключи SQLite включаются для каждого соединения. Рекомендуемый DSN go-sqlite3: file:careerquest.db?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate. Писательскую транзакцию держать короткой. Все даты сохранять как UTC ISO 8601, чтобы строковый порядок совпадал с временным.
-
-Генерация: запустить sqlc generate из internal/repository/sqlite. В текущей среде sqlc запускается через go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0. Для реального go-sqlite3 нужен CGO и C-компилятор. Начальная загрузка выполняется в internal/bootstrap по фактической схеме кита. Пользовательские значения передавать параметрами, не конкатенацией строк.
-
-Детерминированные правила роста, допуска и готовности не передавать LLM. Python ранжирует кандидатов и объясняет выбор; Go проверяет факты и хранит результат действия.
-
-## Проверка перед защитой
-
-1. На пустой БД миграция выполняется; ограничения отвергают неверный уровень, статус, ссылку и повторное app-завершение.
-2. Первый запуск создаёт БД из четырёх файлов; повторный запуск сохраняет существующую БД. Дополнительные профили следует включить в файлы до первого запуска.
-3. Профиль E0028 показывает разрыв следующего грейда и историю; сотрудник не видит чужую историю.
-4. Рекомендация содержит максимум три подходящие активности с доказательствами по грейду, разрыву, эффекту и истории. Три пропуска похожей активности влияют на порядок.
-5. Preview и реальное завершение дают одинаковые уровни; повтор Idempotency-Key не начисляет навык снова.
-6. HR-агрегаты реагируют на завершение. Токен сотрудника не открывает HR-роуты.
-7. Итоговый README указывает фактическую команду запуска после подключения остальных обработчиков и Python-сервиса.
+Generate tokens through cmd/token or in the container. To add extra jury profiles and history after initial startup, use cmd/migrate -append -db <DB_PATH> -data <directory>. That directory needs employees.json and activity_history.csv; existing employee snapshots remain untouched.
